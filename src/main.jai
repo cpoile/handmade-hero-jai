@@ -1,5 +1,6 @@
 #import "Basic";
 #import "Windows";
+#load "modules_additions/Windows.jai";
 
 offscreen_buffer :: struct {
     BitmapInfo : BITMAPINFO;
@@ -28,9 +29,9 @@ get_window_dimensions :: (window: HWND) -> win32_window_dimensions {
 
 render_weird_gradient :: (xOffset: int, yOffset: int) {
     row : *u8 = GlobalBackBuffer.memory;
-    for y: 0..GlobalBackBuffer.height - 1 {
+    for y: 0..GlobalBackBuffer.height-1 {
         pixel : *u32 = xx row;
-        for x: 0..GlobalBackBuffer.width - 1 {
+        for x: 0..GlobalBackBuffer.width-1 {
             //                   1  2  3  4
             // pixel in memory: BB GG RR xx  (bc MSFT wanted to see RGB in register (see register)
             //     in register: xx RR GG BB  (bc it's little endian)
@@ -71,76 +72,60 @@ win32_display_buffer_in_window :: (deviceContext: HDC, destWidth: int, destHeigh
                   GlobalBackBuffer.memory, *GlobalBackBuffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
 }
 
-Win32MainWindowCallback :: (window: HWND, message: u32, WParam: WPARAM, LParam: LPARAM) -> LRESULT {
-    result : LRESULT = 0;
+win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LParam: LPARAM) -> LRESULT #c_call {
+    new_context: Context;
 
-    if message == {
-    case WM_CREATE;
-        OutputDebugStringA("WM_CREATE\n");
+    push_context new_context {
+        result : LRESULT = 0;
 
-    case WM_SIZE;
-        OutputDebugStringA("WM_SIZE\n");
+        if message == {
+            case WM_CREATE;
+            OutputDebugStringA("WM_CREATE\n");
 
-    case WM_DESTROY;
-        GlobalRunning = false;
-        OutputDebugStringA("WM_DESTROY\n");
+            case WM_SIZE;
+            OutputDebugStringA("WM_SIZE\n");
 
-    case WM_CLOSE;
-        GlobalRunning = false;
-        OutputDebugStringA("WM_CLOSE\n");
+            case WM_DESTROY;
+            GlobalRunning = false;
+            OutputDebugStringA("WM_DESTROY\n");
 
-    case WM_ACTIVATEAPP;
-        OutputDebugStringA("WM_ACTIVATEAPP\n");
+            case WM_CLOSE;
+            GlobalRunning = false;
+            OutputDebugStringA("WM_CLOSE\n");
 
-    case WM_PAINT;
-        paint: PAINTSTRUCT;
-        deviceContext: HDC            = BeginPaint(window, *paint);
-        dims: win32_window_dimensions = get_window_dimensions(window);
+            case WM_ACTIVATEAPP;
+            OutputDebugStringA("WM_ACTIVATEAPP\n");
 
-        win32_display_buffer_in_window(deviceContext, dims.width, dims.height);
-        EndPaint(window, *paint);
+            case WM_PAINT;
+            paint: PAINTSTRUCT;
+            deviceContext: HDC            = BeginPaint(window, *paint);
+            dims: win32_window_dimensions = get_window_dimensions(window);
 
-    case;
-        //            OutputDebugStringA("default\n")
-        result = DefWindowProcA(window, message, WParam, LParam);
+            win32_display_buffer_in_window(deviceContext, dims.width, dims.height);
+            EndPaint(window, *paint);
+
+            case;
+            //            OutputDebugStringA("default\n")
+            result = DefWindowProcA(window, message, WParam, LParam);
+        }
+
+        return (result);
     }
-
-    return (result);
 };
 
 #import "Window_Creation";
+
+#add_context _windows_windowproc :: win32_main_window_callback;
+#add_context _windows_windowproc_allocator: Allocator;
 
 //WinMain :: (Instance: HINSTANCE, PrevInstance: HINSTANCE, CommandLine: *u8, ShowCode: int) -> {
 main :: () {
     windowHandle := create_window(1280, 720, "Handmade Hero");
 
-    // WNDCLASS WindowClass = {};
-
     win32_resize_DIB_section(1280, 720);
 
-    // // TODO: check if these matter
-    // WindowClass.style       = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
-    // WindowClass.lpfnWndProc = Win32MainWindowCallback;
-    // WindowClass.hInstance   = Instance;
-    // // WindowClass.hIcon;
-    // WindowClass.lpszClassName = "HandmadeHeroWindowClass";
-
-    // if (!RegisterClass(&WindowClass))
-    // {
-    //     // TODO: logging
-    //     return 1;
-    // };
-
-    // HWND WindowHandle = CreateWindowExA(0, WindowClass.lpszClassName, "Handmade Hero", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-    //                                     CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, 0, 0, Instance, 0);
-    // if (!WindowHandle)
-    // {
-    //     // TODO: Error handling/logging
-    //     return 1;
-    // }
-
-    // NOTE: since we specified CS_OWNDC, we can just get one device context and use it
-    // forever because we are not sharing it with anyone
+    // NOTE: since we specified CS_OWNDC (in Window_Creation/windows.jai), we can just get one device context and use it
+    // forever because we are not sharing it with anyone.
     deviceContext := GetDC(windowHandle);
 
     xOffset := 0;
