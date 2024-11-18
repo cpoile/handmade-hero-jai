@@ -15,7 +15,7 @@ win32_window_dimensions :: struct {
     height : int;
 }
 
-GlobalRunning := true;
+global_running := true;
 GlobalBackBuffer : offscreen_buffer;
 
 get_window_dimensions :: (window: HWND) -> win32_window_dimensions {
@@ -35,8 +35,8 @@ render_weird_gradient :: (xOffset: int, yOffset: int) {
             //                   1  2  3  4
             // pixel in memory: BB GG RR xx  (bc MSFT wanted to see RGB in register (see register)
             //     in register: xx RR GG BB  (bc it's little endian)
-            bb := cast (u8)((x + xOffset) % 255);
-            gg := cast (u8)((y + yOffset) % 255);
+            bb := cast (u8)max(((x + xOffset) % 255), 0);
+            gg := cast (u8)max(((y + yOffset) % 255), 0);
             <<pixel = ((cast(u32) gg) << 8 | bb);
             pixel += 1;
         }
@@ -78,35 +78,65 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
     push_context new_context {
         result : LRESULT = 0;
 
+        alt_is_down := false;
+
         if message == {
             case WM_CREATE;
-            OutputDebugStringA("WM_CREATE\n");
+                OutputDebugStringA("WM_CREATE\n");
 
             case WM_SIZE;
-            OutputDebugStringA("WM_SIZE\n");
+                OutputDebugStringA("WM_SIZE\n");
 
             case WM_DESTROY;
-            GlobalRunning = false;
-            OutputDebugStringA("WM_DESTROY\n");
+                global_running = false;
+                OutputDebugStringA("WM_DESTROY\n");
 
-            case WM_CLOSE;
-            GlobalRunning = false;
-            OutputDebugStringA("WM_CLOSE\n");
+            case WM_SYSKEYDOWN;  #through;
+            case WM_SYSKEYUP;    #through;
+            case WM_KEYDOWN;     #through;
+            case WM_KEYUP; {
+                vk_code: u32 = xx WParam;
+                wasDown := (LParam & (1 << 30)) != 0;
+                isDown := (LParam & (1 << 31)) == 0;
+                if (isDown != wasDown) {
+                    // NOTE: not real code, just a placeholder, later we'll use a switch or something.
+                    if      vk_code == VK_MENU    alt_is_down = isDown;
+                    else if vk_code == VK_F4      global_running = false;
+                    else if vk_code == #char "W"  OutputDebugStringA("W\n");
+                    else if vk_code == #char "A"  OutputDebugStringA("A\n");
+                    else if vk_code == #char "R"  OutputDebugStringA("R\n");
+                    else if vk_code == #char "S"  OutputDebugStringA("S\n");
+                    else if vk_code == #char "Q"  OutputDebugStringA("Q\n");
+                    else if vk_code == #char "F"  OutputDebugStringA("F\n");
+                    else if vk_code == VK_UP      OutputDebugStringA("up\n");
+                    else if vk_code == VK_DOWN    OutputDebugStringA("down\n");
+                    else if vk_code == VK_LEFT    OutputDebugStringA("left\n");
+                    else if vk_code == VK_RIGHT   OutputDebugStringA("Right\n");
+                    else if vk_code == VK_ESCAPE  OutputDebugStringA(to_c_string(tprint("Escape is down? % was down? %\n", isDown, wasDown),, temp));
+                    else if vk_code == VK_SPACE   OutputDebugStringA("Space\n");
+                }
+            }
+
+            case WM_CLOSE; {
+                global_running = false;
+                OutputDebugStringA("WM_CLOSE\n");
+            }
 
             case WM_ACTIVATEAPP;
-            OutputDebugStringA("WM_ACTIVATEAPP\n");
+                OutputDebugStringA("WM_ACTIVATEAPP\n");
 
-            case WM_PAINT;
-            paint: PAINTSTRUCT;
-            deviceContext: HDC            = BeginPaint(window, *paint);
-            dims: win32_window_dimensions = get_window_dimensions(window);
+            case WM_PAINT; {
+                paint: PAINTSTRUCT;
+                device_context: HDC            = BeginPaint(window, *paint);
+                dims: win32_window_dimensions = get_window_dimensions(window);
 
-            win32_display_buffer_in_window(deviceContext, dims.width, dims.height);
-            EndPaint(window, *paint);
+                win32_display_buffer_in_window(device_context, dims.width, dims.height);
+                EndPaint(window, *paint);
+            }
 
             case;
-            //            OutputDebugStringA("default\n")
-            result = DefWindowProcA(window, message, WParam, LParam);
+                //            OutputDebugStringA("default\n")
+                result = DefWindowProcA(window, message, WParam, LParam);
         }
 
         return (result);
@@ -114,6 +144,9 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 };
 
 #import "Window_Creation";
+#import "Random";
+#import,file "/jai/modules/Gamepad/Xinput.jai";
+#import "Math";
 
 #add_context _windows_windowproc :: win32_main_window_callback;
 #add_context _windows_windowproc_allocator: Allocator;
@@ -131,23 +164,57 @@ main :: () {
     xOffset := 0;
     yOffset := 0;
 
+    success := init_xinput();
+    if !success {
+        OutputDebugStringA("Error: Could not initialize xinput!");
+        return;
+    }
+
     message: MSG;
-    while (GlobalRunning)
+    while (global_running)
     {
         if PeekMessageA(*message, null, 0, 0, PM_REMOVE) {
-            if message.message == WM_QUIT  GlobalRunning = false;
+            if message.message == WM_QUIT  global_running = false;
 
             TranslateMessage(*message);
             DispatchMessageA(*message);
         }
+
+        // TODO: Should we poll this more frequently?
+        for controller_index: 0..XUSER_MAX_COUNT-1 {
+            controller_state: XINPUT_STATE;
+            if XInputGetState(xx controller_index, *controller_state) == 0 /*ERROR_SUCCESS*/ {
+                pad := *controller_state.Gamepad;
+                up := pad.wButtons & XINPUT_GAMEPAD_DPAD_UP;
+                down := pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
+                left := pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
+                right := pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
+                start := pad.wButtons & XINPUT_GAMEPAD_START;
+                back := pad.wButtons & XINPUT_GAMEPAD_BACK;
+                left_shoulder := pad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
+                right_shoulder := pad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
+                a_button := pad.wButtons & XINPUT_GAMEPAD_A;
+                b_button := pad.wButtons & XINPUT_GAMEPAD_B;
+                x_button := pad.wButtons & XINPUT_GAMEPAD_X;
+                y_button := pad.wButtons & XINPUT_GAMEPAD_Y;
+
+                stick_x := pad.sThumbLX;
+                stick_y := pad.sThumbLY;
+
+                xOffset += stick_x >> 12;
+                yOffset -= stick_y >> 12;
+            } else {
+                // controller not available
+            }
+        }
+
+        // vibration: XINPUT_VIBRATION = .{60000, 60000};
+        // XInputSetState(0, *vibration);
 
         render_weird_gradient(xOffset, yOffset);
 
         dims := get_window_dimensions(windowHandle);
 
         win32_display_buffer_in_window(deviceContext, dims.width, dims.height);
-
-        xOffset += 1;
-        yOffset += 2;
     }
 }
