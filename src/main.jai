@@ -17,6 +17,75 @@ win32_window_dimensions :: struct {
 
 global_running := true;
 GlobalBackBuffer : offscreen_buffer;
+dsound_lib :: #system_library "dsound";
+dsound: *IDirectSound8;
+primary_buffer: *IDirectSoundBuffer8;
+sec_buffer: *IDirectSoundBuffer8;
+
+win32_init_dsound :: (window: HWND) {
+    buffer_size :: 48000*size_of(u16)*2;
+
+    // load the library
+    DirectSoundCreate8 :: (device: *void, ppds8: **IDirectSound8, outer: *void) -> s32 #foreign dsound_lib;
+    hr := DirectSoundCreate8(null, *dsound, null);
+    if !SUCCEEDED(hr) {
+        log_error("DirectSoundCreate8 failed!\n");
+        return;
+    } else {
+        log("DirectSoundCreate8 Worked!\n");
+    }
+
+    DSSCL_PRIORITY :: 0x2;
+    hr = dsound.SetCooperativeLevel(dsound, window, DSSCL_PRIORITY);
+    if !SUCCEEDED(hr) {
+        log_error("SetCooperativeLevel failed!\n");
+        return;
+    }
+
+    dsbd: DSBUFFERDESC;
+    dsbd.dwSize        = size_of(DSBUFFERDESC);
+    dsbd.dwFlags       = DSBCAPS_PRIMARYBUFFER;
+    dsbd.dwBufferBytes = PRIMARY_BUFFER_SIZE_IN_BYTES;
+
+    hr = dsound.CreateSoundBuffer(dsound, *dsbd, *primary_buffer, null);
+    if !SUCCEEDED(hr) {
+        log_error("CreateSoundBuffer failed!\n");
+        return;
+    }
+
+    KSDATAFORMAT_SUBTYPE_PCM : GUID;
+    init_KSDATAFORMAT_SUBTYPE_PCM(*KSDATAFORMAT_SUBTYPE_PCM);
+    WAVE_FORMAT_PCM :: 0x0001;
+
+    wfx: WAVEFORMATEXTENSIBLE;
+    wfx.Format.wFormatTag      = WAVE_FORMAT_PCM;
+    wfx.Format.nChannels       = 2;
+    wfx.Format.wBitsPerSample  = 16;
+    wfx.Format.nSamplesPerSec  = OUTPUT_SAMPLING_RATE;
+    wfx.Format.nBlockAlign     = (wfx.Format.wBitsPerSample / 8) * wfx.Format.nChannels;
+    wfx.Format.nAvgBytesPerSec = wfx.Format.nSamplesPerSec * wfx.Format.nBlockAlign;
+
+    hr = primary_buffer.SetFormat(primary_buffer, *wfx.Format);
+    if !SUCCEEDED(hr) {
+        log_error("SetFormat failed!\n");
+        return;
+    }
+
+    // secondary buffer
+    sec_desc: DSBUFFERDESC;
+    sec_desc.dwSize        = size_of(DSBUFFERDESC);
+    sec_desc.dwFlags       = DSBCAPS_CTRLVOLUME | DSBCAPS_GETCURRENTPOSITION2;
+    sec_desc.dwBufferBytes = buffer_size;
+    sec_desc.lpwfxFormat   = *wfx.Format;
+
+    hr = dsound.vtable.CreateSoundBuffer(dsound, *sec_desc, *sec_buffer, null);
+    if !SUCCEEDED(hr) {
+        log_error("CreateSoundBuffer failed!\n");
+        return;
+    }
+
+    log("Secondary buffer succeeded!\n");
+}
 
 get_window_dimensions :: (window: HWND) -> win32_window_dimensions {
     client_rect: RECT;
@@ -63,7 +132,7 @@ win32_resize_DIB_section :: (width: s32, height: s32) {
     GlobalBackBuffer.BitmapInfo.bmiHeader.biCompression = BI_RGB;
 
     bitmap_memory_size      := cast(u64) ((GlobalBackBuffer.width * GlobalBackBuffer.height) * bytes_per_pixel);
-    GlobalBackBuffer.memory  = VirtualAlloc(null, bitmap_memory_size, MEM_COMMIT, PAGE_READWRITE);
+    GlobalBackBuffer.memory  = VirtualAlloc(null, bitmap_memory_size, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
 }
 
 win32_display_buffer_in_window :: (deviceContext: HDC, destWidth: int, destHeight: int) {
@@ -96,24 +165,24 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
             case WM_KEYDOWN;     #through;
             case WM_KEYUP; {
                 vk_code: u32 = xx WParam;
+                altDown := (LParam & (1 << 29)) != 0;
                 wasDown := (LParam & (1 << 30)) != 0;
                 isDown := (LParam & (1 << 31)) == 0;
                 if (isDown != wasDown) {
                     // NOTE: not real code, just a placeholder, later we'll use a switch or something.
-                    if      vk_code == VK_MENU    alt_is_down = isDown;
-                    else if vk_code == VK_F4      global_running = false;
-                    else if vk_code == #char "W"  OutputDebugStringA("W\n");
-                    else if vk_code == #char "A"  OutputDebugStringA("A\n");
-                    else if vk_code == #char "R"  OutputDebugStringA("R\n");
-                    else if vk_code == #char "S"  OutputDebugStringA("S\n");
-                    else if vk_code == #char "Q"  OutputDebugStringA("Q\n");
-                    else if vk_code == #char "F"  OutputDebugStringA("F\n");
-                    else if vk_code == VK_UP      OutputDebugStringA("up\n");
-                    else if vk_code == VK_DOWN    OutputDebugStringA("down\n");
-                    else if vk_code == VK_LEFT    OutputDebugStringA("left\n");
-                    else if vk_code == VK_RIGHT   OutputDebugStringA("Right\n");
-                    else if vk_code == VK_ESCAPE  OutputDebugStringA(to_c_string(tprint("Escape is down? % was down? %\n", isDown, wasDown),, temp));
-                    else if vk_code == VK_SPACE   OutputDebugStringA("Space\n");
+                    if vk_code == VK_F4 && altDown  global_running = false;
+                    else if vk_code == #char "W"    OutputDebugStringA("W\n");
+                    else if vk_code == #char "A"    OutputDebugStringA("A\n");
+                    else if vk_code == #char "R"    OutputDebugStringA("R\n");
+                    else if vk_code == #char "S"    OutputDebugStringA("S\n");
+                    else if vk_code == #char "Q"    OutputDebugStringA("Q\n");
+                    else if vk_code == #char "F"    OutputDebugStringA("F\n");
+                    else if vk_code == VK_UP        OutputDebugStringA("up\n");
+                    else if vk_code == VK_DOWN      OutputDebugStringA("down\n");
+                    else if vk_code == VK_LEFT      OutputDebugStringA("left\n");
+                    else if vk_code == VK_RIGHT     OutputDebugStringA("Right\n");
+                    else if vk_code == VK_ESCAPE    OutputDebugStringA(to_c_string(tprint("Escape is down? % was down? %\n", isDown, wasDown),, temp));
+                    else if vk_code == VK_SPACE     OutputDebugStringA("Space\n");
                 }
             }
 
@@ -143,23 +212,18 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
     }
 };
 
-#import "Window_Creation";
-#import "Random";
-#import,file "/jai/modules/Gamepad/Xinput.jai";
-#import "Math";
-
 #add_context _windows_windowproc :: win32_main_window_callback;
 #add_context _windows_windowproc_allocator: Allocator;
 
 //WinMain :: (Instance: HINSTANCE, PrevInstance: HINSTANCE, CommandLine: *u8, ShowCode: int) -> {
 main :: () {
-    windowHandle := create_window(1280, 720, "Handmade Hero");
+    window := create_window(1280, 720, "Handmade Hero");
 
     win32_resize_DIB_section(1280, 720);
 
     // NOTE: since we specified CS_OWNDC (in Window_Creation/windows.jai), we can just get one device context and use it
     // forever because we are not sharing it with anyone.
-    deviceContext := GetDC(windowHandle);
+    deviceContext := GetDC(window);
 
     xOffset := 0;
     yOffset := 0;
@@ -169,6 +233,8 @@ main :: () {
         OutputDebugStringA("Error: Could not initialize xinput!");
         return;
     }
+
+    win32_init_dsound(window);
 
     message: MSG;
     while (global_running)
@@ -213,8 +279,15 @@ main :: () {
 
         render_weird_gradient(xOffset, yOffset);
 
-        dims := get_window_dimensions(windowHandle);
+        dims := get_window_dimensions(window);
 
         win32_display_buffer_in_window(deviceContext, dims.width, dims.height);
     }
 }
+
+
+#import "Window_Creation";
+#import "Random";
+#import,file "/jai/modules/Gamepad/Xinput.jai";
+#import "Sound_Player";
+#import "Math";

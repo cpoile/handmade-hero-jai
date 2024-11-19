@@ -5,7 +5,7 @@
     options := get_build_options(w);
     options.output_path = "build/";
     options.output_executable_name = "handmade";
-    options.additional_linker_arguments = string.["/SUBSYSTEM:WINDOWS", "/ENTRY:main", "/IGNORE:4216"];
+    //options.additional_linker_arguments = string.["/SUBSYSTEM:WINDOWS", "/ENTRY:main", "/IGNORE:4216"];
     set_build_options(options, w);
 
     // add all your files here.
