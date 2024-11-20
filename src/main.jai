@@ -19,11 +19,10 @@ global_running := true;
 GlobalBackBuffer : offscreen_buffer;
 dsound_lib :: #system_library "dsound";
 dsound: *IDirectSound8;
-primary_buffer: *IDirectSoundBuffer8;
 sec_buffer: *IDirectSoundBuffer8;
 
-win32_init_dsound :: (window: HWND) {
-    buffer_size :: 48000*size_of(u16)*2;
+win32_init_dsound :: (window: HWND, samples_per_second: u32, buffer_size: s32) {
+    primary_buffer: *IDirectSoundBuffer8;
 
     // load the library
     DirectSoundCreate8 :: (device: *void, ppds8: **IDirectSound8, outer: *void) -> s32 #foreign dsound_lib;
@@ -225,8 +224,19 @@ main :: () {
     // forever because we are not sharing it with anyone.
     deviceContext := GetDC(window);
 
+    // NOTE: graphics test
     xOffset := 0;
     yOffset := 0;
+
+    // NOTE: sound test
+    samples_per_second :: 48000;
+    tone_hz := 261;
+    volume : s16 = 3000;
+    running_sample_index : u32 = 0;
+    square_wave_period := samples_per_second/tone_hz;
+    half_square_wave_period := square_wave_period/2;
+    bytes_per_sample :: size_of(u16)*2;
+    sec_buffer_size : u32 = samples_per_second*bytes_per_sample;
 
     success := init_xinput();
     if !success {
@@ -234,7 +244,11 @@ main :: () {
         return;
     }
 
-    win32_init_dsound(window);
+    win32_init_dsound(window, samples_per_second, xx sec_buffer_size);
+    hr := sec_buffer.Play(sec_buffer, 0, 0, DSBPLAY_LOOPING);
+    if FAILED(hr) {
+        log_error("Play failed!");
+    }
 
     message: MSG;
     while (global_running)
@@ -278,6 +292,61 @@ main :: () {
         // XInputSetState(0, *vibration);
 
         render_weird_gradient(xOffset, yOffset);
+
+        // DirectSound output test
+        play_cursor, write_cursor : s32;
+        hr := sec_buffer.GetCurrentPosition(sec_buffer, *play_cursor, *write_cursor);
+        if FAILED(hr) {
+            log_error("GetCurrentPosition failed!");
+        } else {
+            log_error("running_sample_index: %", running_sample_index);
+            bytes_to_lock : u32 = (running_sample_index * bytes_per_sample) % sec_buffer_size;
+            bytes_to_write: u32;
+
+             if bytes_to_lock > xx play_cursor {
+                bytes_to_write = sec_buffer_size - bytes_to_lock;  // we have this much ahead of us in the buffer to write to
+                bytes_to_write += xx play_cursor;                   // and add the first part of the buffer up to the play cursor
+            } else {
+                bytes_to_write = xx play_cursor - bytes_to_lock;    // we only have to fill from bytes_to_lock up to the play_cursor
+            }
+
+            //  u16   u16     u16   u16    u16   u16
+            // [left right] [left right] [left right]
+            region1, region2: *void;
+            size1, size2: s32;
+            hr = sec_buffer.Lock(sec_buffer, cast(s32) write_cursor, cast(s32) bytes_to_write,
+                                 *region1, *size1, *region2, *size2, 0);
+
+            if FAILED(hr) {
+                log_error("Lock failed!");
+            } else {
+                log_error("GOT LOCK!");
+                sample_out := cast(*s16) region1;
+                region1_sample_count : s32 = size1/bytes_per_sample;
+                for 0..region1_sample_count-1 {
+                    sample_value := cast(s16) ifx ((running_sample_index / half_square_wave_period) % 2) volume else -volume;
+                    sample_out.* = sample_value;
+                    sample_out += 1;
+                    sample_out.* = sample_value;
+                    sample_out += 1;
+                    running_sample_index += 1 ;
+                }
+
+                sample_out = xx region2;
+                region2_sample_count : s32 = size2/bytes_per_sample;
+                for 0..region2_sample_count-1 {
+                    sample_value := cast(s16) ifx ((square_wave_period / half_square_wave_period) % 2) volume else -volume;
+                    sample_out.* = sample_value;
+                    sample_out += 1;
+                    sample_out.* = sample_value;
+                    sample_out += 1;
+                    running_sample_index += 1;
+                }
+
+                hr = sec_buffer.Unlock(sec_buffer, region1, size1, region2, size2);
+            }
+        }
+
 
         dims := get_window_dimensions(window);
 
