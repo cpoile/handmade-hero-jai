@@ -214,7 +214,57 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 #add_context _windows_windowproc :: win32_main_window_callback;
 #add_context _windows_windowproc_allocator: Allocator;
 
-//WinMain :: (Instance: HINSTANCE, PrevInstance: HINSTANCE, CommandLine: *u8, ShowCode: int) -> {
+win32_sound_output :: struct {
+    samples_per_second :: 48000;
+    tone_hz :: 261;  // middle C
+    volume : s16 = 10000;
+    running_sample_index : u32 = 0;
+    wave_period : float32 = samples_per_second/tone_hz;
+    bytes_per_sample :: size_of(u16)*2;
+    sec_buffer_size : u32 = samples_per_second*bytes_per_sample;
+}
+
+win32_fill_sound_buffer :: (sound_output: *win32_sound_output, byte_to_lock: u32, bytes_to_write: u32) {
+    //  u16   u16     u16   u16    u16   u16
+    // [left right] [left right] [left right]
+    region1, region2: *void;
+    size1, size2: s32;
+    hr := sec_buffer.Lock(sec_buffer, cast(s32) byte_to_lock, cast(s32) bytes_to_write,
+                         *region1, *size1, *region2, *size2, 0);
+
+    if FAILED(hr) {
+        log_error("Lock failed!");
+    } else {
+        region1_sample_count : s32 = size1/sound_output.bytes_per_sample;
+        sample_out := cast(*s16) region1;
+        for 0..region1_sample_count-1 {
+            t : float32 = 2.0 * PI * sound_output.running_sample_index / sound_output.wave_period;
+            sine_val := sin(t);
+            sample_value : s16 = xx (sine_val * sound_output.volume);
+            sample_out.* = sample_value;
+            sample_out += 1;
+            sample_out.* = sample_value;
+            sample_out += 1;
+            sound_output.running_sample_index += 1 ;
+        }
+
+        region2_sample_count : s32 = size2/sound_output.bytes_per_sample;
+        sample_out = cast(*s16) region2;
+        for 0..region2_sample_count-1 {
+            t : float32 = 2.0 * PI * sound_output.running_sample_index / sound_output.wave_period;
+            sine_val := sin(t);
+            sample_value : s16 = xx (sine_val * sound_output.volume);
+            sample_out.* = sample_value;
+            sample_out += 1;
+            sample_out.* = sample_value;
+            sample_out += 1;
+            sound_output.running_sample_index += 1;
+        }
+
+        hr = sec_buffer.Unlock(sec_buffer, region1, size1, region2, size2);
+    }
+}
+
 main :: () {
     window := create_window(1280, 720, "Handmade Hero");
 
@@ -228,23 +278,17 @@ main :: () {
     xOffset := 0;
     yOffset := 0;
 
-    // NOTE: sound test
-    samples_per_second :: 48000;
-    tone_hz := 261;
-    volume : s16 = 3000;
-    running_sample_index : u32 = 0;
-    square_wave_period := samples_per_second/tone_hz;
-    half_square_wave_period := square_wave_period/2;
-    bytes_per_sample :: size_of(u16)*2;
-    sec_buffer_size : u32 = samples_per_second*bytes_per_sample;
-
     success := init_xinput();
     if !success {
         OutputDebugStringA("Error: Could not initialize xinput!");
         return;
     }
 
-    win32_init_dsound(window, samples_per_second, xx sec_buffer_size);
+    sound_output : win32_sound_output = .{};
+
+    win32_init_dsound(window, sound_output.samples_per_second, xx sound_output.sec_buffer_size);
+    win32_fill_sound_buffer(*sound_output, 0, sound_output.sec_buffer_size);
+
     hr := sec_buffer.Play(sec_buffer, 0, 0, DSBPLAY_LOOPING);
     if FAILED(hr) {
         log_error("Play failed!");
@@ -299,54 +343,20 @@ main :: () {
         if FAILED(hr) {
             log_error("GetCurrentPosition failed!");
         } else {
-            log_error("running_sample_index: %", running_sample_index);
-            bytes_to_lock : u32 = (running_sample_index * bytes_per_sample) % sec_buffer_size;
-            bytes_to_write: u32;
+            log_error("running_sample_index: %", sound_output.running_sample_index);
+            byte_to_lock : u32 = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.sec_buffer_size;
+            bytes_to_write: u32;  // NOTE: jai auto initializes to zero
 
-             if bytes_to_lock > xx play_cursor {
-                bytes_to_write = sec_buffer_size - bytes_to_lock;  // we have this much ahead of us in the buffer to write to
+            // TODO: Change this to using a lower latency offset from the playcursor when we start having sound effects.
+            if byte_to_lock > xx play_cursor {
+                bytes_to_write = sound_output.sec_buffer_size - byte_to_lock;  // we have this much ahead of us in the buffer to write to
                 bytes_to_write += xx play_cursor;                   // and add the first part of the buffer up to the play cursor
             } else {
-                bytes_to_write = xx play_cursor - bytes_to_lock;    // we only have to fill from bytes_to_lock up to the play_cursor
+                bytes_to_write = xx play_cursor - byte_to_lock;    // we only have to fill from byte_to_lock up to the play_cursor
             }
 
-            //  u16   u16     u16   u16    u16   u16
-            // [left right] [left right] [left right]
-            region1, region2: *void;
-            size1, size2: s32;
-            hr = sec_buffer.Lock(sec_buffer, cast(s32) write_cursor, cast(s32) bytes_to_write,
-                                 *region1, *size1, *region2, *size2, 0);
-
-            if FAILED(hr) {
-                log_error("Lock failed!");
-            } else {
-                log_error("GOT LOCK!");
-                sample_out := cast(*s16) region1;
-                region1_sample_count : s32 = size1/bytes_per_sample;
-                for 0..region1_sample_count-1 {
-                    sample_value := cast(s16) ifx ((running_sample_index / half_square_wave_period) % 2) volume else -volume;
-                    sample_out.* = sample_value;
-                    sample_out += 1;
-                    sample_out.* = sample_value;
-                    sample_out += 1;
-                    running_sample_index += 1 ;
-                }
-
-                sample_out = xx region2;
-                region2_sample_count : s32 = size2/bytes_per_sample;
-                for 0..region2_sample_count-1 {
-                    sample_value := cast(s16) ifx ((square_wave_period / half_square_wave_period) % 2) volume else -volume;
-                    sample_out.* = sample_value;
-                    sample_out += 1;
-                    sample_out.* = sample_value;
-                    sample_out += 1;
-                    running_sample_index += 1;
-                }
-
-                hr = sec_buffer.Unlock(sec_buffer, region1, size1, region2, size2);
-            }
+            win32_fill_sound_buffer(*sound_output, byte_to_lock, bytes_to_write);
         }
-
 
         dims := get_window_dimensions(window);
 
