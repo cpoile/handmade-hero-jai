@@ -27,7 +27,7 @@ win32_init_dsound :: (window: HWND, samples_per_second: u32, buffer_size: s32) {
     // load the library
     DirectSoundCreate8 :: (device: *void, ppds8: **IDirectSound8, outer: *void) -> s32 #foreign dsound_lib;
     hr := DirectSoundCreate8(null, *dsound, null);
-    if !SUCCEEDED(hr) {
+    if FAILED(hr) {
         log_error("DirectSoundCreate8 failed!\n");
         return;
     } else {
@@ -36,7 +36,7 @@ win32_init_dsound :: (window: HWND, samples_per_second: u32, buffer_size: s32) {
 
     DSSCL_PRIORITY :: 0x2;
     hr = dsound.SetCooperativeLevel(dsound, window, DSSCL_PRIORITY);
-    if !SUCCEEDED(hr) {
+    if FAILED(hr) {
         log_error("SetCooperativeLevel failed!\n");
         return;
     }
@@ -47,7 +47,7 @@ win32_init_dsound :: (window: HWND, samples_per_second: u32, buffer_size: s32) {
     dsbd.dwBufferBytes = PRIMARY_BUFFER_SIZE_IN_BYTES;
 
     hr = dsound.CreateSoundBuffer(dsound, *dsbd, *primary_buffer, null);
-    if !SUCCEEDED(hr) {
+    if FAILED(hr) {
         log_error("CreateSoundBuffer failed!\n");
         return;
     }
@@ -65,7 +65,7 @@ win32_init_dsound :: (window: HWND, samples_per_second: u32, buffer_size: s32) {
     wfx.Format.nAvgBytesPerSec = wfx.Format.nSamplesPerSec * wfx.Format.nBlockAlign;
 
     hr = primary_buffer.SetFormat(primary_buffer, *wfx.Format);
-    if !SUCCEEDED(hr) {
+    if FAILED(hr) {
         log_error("SetFormat failed!\n");
         return;
     }
@@ -78,7 +78,7 @@ win32_init_dsound :: (window: HWND, samples_per_second: u32, buffer_size: s32) {
     sec_desc.lpwfxFormat   = *wfx.Format;
 
     hr = dsound.vtable.CreateSoundBuffer(dsound, *sec_desc, *sec_buffer, null);
-    if !SUCCEEDED(hr) {
+    if FAILED(hr) {
         log_error("CreateSoundBuffer failed!\n");
         return;
     }
@@ -234,9 +234,7 @@ win32_fill_sound_buffer :: (sound_output: *win32_sound_output, byte_to_lock: u32
     hr := sec_buffer.Lock(sec_buffer, cast(s32) byte_to_lock, cast(s32) bytes_to_write,
                          *region1, *size1, *region2, *size2, 0);
 
-    if FAILED(hr) {
-        log_error("Lock failed!");
-    } else {
+    if SUCCEEDED(hr) {
         region1_sample_count : s32 = size1/sound_output.bytes_per_sample;
         sample_out := cast(*s16) region1;
         for 0..region1_sample_count-1 {
@@ -353,7 +351,6 @@ main :: () {
         if FAILED(hr) {
             log_error("GetCurrentPosition failed!");
         } else {
-            log_error("running_sample_index: %", sound_output.running_sample_index);
             byte_to_lock : u32 = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.sec_buffer_size;
             target_cursor := xx (play_cursor + (sound_output.latency_sample_count * sound_output.bytes_per_sample)) % sound_output.sec_buffer_size;
             bytes_to_write: u32;  // NOTE: jai auto initializes to zero
