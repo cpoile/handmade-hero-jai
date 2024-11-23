@@ -216,12 +216,14 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 
 win32_sound_output :: struct {
     samples_per_second :: 48000;
-    tone_hz :: 261;  // middle C
+    tone_hz : float32 = 261;  // middle C
     volume : s16 = 10000;
     running_sample_index : u32 = 0;
-    wave_period : float32 = samples_per_second/tone_hz;
+    wave_period : float32 = samples_per_second/261; // initial value
     bytes_per_sample :: size_of(u16)*2;
     sec_buffer_size : u32 = samples_per_second*bytes_per_sample;
+    tSine : float32;
+    latency_sample_count :: samples_per_second/20;
 }
 
 win32_fill_sound_buffer :: (sound_output: *win32_sound_output, byte_to_lock: u32, bytes_to_write: u32) {
@@ -238,26 +240,28 @@ win32_fill_sound_buffer :: (sound_output: *win32_sound_output, byte_to_lock: u32
         region1_sample_count : s32 = size1/sound_output.bytes_per_sample;
         sample_out := cast(*s16) region1;
         for 0..region1_sample_count-1 {
-            t : float32 = 2.0 * PI * sound_output.running_sample_index / sound_output.wave_period;
-            sine_val := sin(t);
+            sine_val := sin(sound_output.tSine);
             sample_value : s16 = xx (sine_val * sound_output.volume);
             sample_out.* = sample_value;
             sample_out += 1;
             sample_out.* = sample_value;
             sample_out += 1;
+
+            sound_output.tSine += 2.0 * PI / sound_output.wave_period;
             sound_output.running_sample_index += 1 ;
         }
 
         region2_sample_count : s32 = size2/sound_output.bytes_per_sample;
         sample_out = cast(*s16) region2;
         for 0..region2_sample_count-1 {
-            t : float32 = 2.0 * PI * sound_output.running_sample_index / sound_output.wave_period;
-            sine_val := sin(t);
+            sine_val := sin(sound_output.tSine);
             sample_value : s16 = xx (sine_val * sound_output.volume);
             sample_out.* = sample_value;
             sample_out += 1;
             sample_out.* = sample_value;
             sample_out += 1;
+
+            sound_output.tSine += 2.0 * PI / sound_output.wave_period;
             sound_output.running_sample_index += 1;
         }
 
@@ -287,7 +291,7 @@ main :: () {
     sound_output : win32_sound_output = .{};
 
     win32_init_dsound(window, sound_output.samples_per_second, xx sound_output.sec_buffer_size);
-    win32_fill_sound_buffer(*sound_output, 0, sound_output.sec_buffer_size);
+    win32_fill_sound_buffer(*sound_output, 0, sound_output.latency_sample_count * sound_output.bytes_per_sample);
 
     hr := sec_buffer.Play(sec_buffer, 0, 0, DSBPLAY_LOOPING);
     if FAILED(hr) {
@@ -325,8 +329,14 @@ main :: () {
                 stick_x := pad.sThumbLX;
                 stick_y := pad.sThumbLY;
 
-                xOffset += stick_x >> 12;
-                yOffset -= stick_y >> 12;
+                // NOTE: we will do deadzone handling later:
+                // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
+                // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
+                xOffset += stick_x / 4096;
+                yOffset -= stick_y / 4096;
+
+                sound_output.tone_hz = 512 + 256.0*(stick_y / 30000.0);
+                sound_output.wave_period = sound_output.samples_per_second/sound_output.tone_hz;
             } else {
                 // controller not available
             }
@@ -345,14 +355,15 @@ main :: () {
         } else {
             log_error("running_sample_index: %", sound_output.running_sample_index);
             byte_to_lock : u32 = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.sec_buffer_size;
+            target_cursor := xx (play_cursor + (sound_output.latency_sample_count * sound_output.bytes_per_sample)) % sound_output.sec_buffer_size;
             bytes_to_write: u32;  // NOTE: jai auto initializes to zero
 
             // TODO: Change this to using a lower latency offset from the playcursor when we start having sound effects.
-            if byte_to_lock > xx play_cursor {
+            if byte_to_lock > xx target_cursor {
                 bytes_to_write = sound_output.sec_buffer_size - byte_to_lock;  // we have this much ahead of us in the buffer to write to
-                bytes_to_write += xx play_cursor;                   // and add the first part of the buffer up to the play cursor
+                bytes_to_write += xx target_cursor;                   // and add the first part of the buffer up to the play cursor
             } else {
-                bytes_to_write = xx play_cursor - byte_to_lock;    // we only have to fill from byte_to_lock up to the play_cursor
+                bytes_to_write = xx target_cursor - byte_to_lock;    // we only have to fill from byte_to_lock up to the play_cursor
             }
 
             win32_fill_sound_buffer(*sound_output, byte_to_lock, bytes_to_write);
