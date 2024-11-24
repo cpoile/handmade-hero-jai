@@ -268,6 +268,9 @@ win32_fill_sound_buffer :: (sound_output: *win32_sound_output, byte_to_lock: u32
 }
 
 main :: () {
+    perf_counter_frequency : s64;   // frequency is per second
+    QueryPerformanceFrequency(*perf_counter_frequency);
+
     window := create_window(1280, 720, "Handmade Hero");
 
     win32_resize_DIB_section(1280, 720);
@@ -295,6 +298,10 @@ main :: () {
     if FAILED(hr) {
         log_error("Play failed!");
     }
+
+    last_counter: s64;
+    last_cycle_count := rdtsc();
+    QueryPerformanceCounter(*last_counter);
 
     message: MSG;
     while (global_running)
@@ -353,9 +360,8 @@ main :: () {
         } else {
             byte_to_lock : u32 = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.sec_buffer_size;
             target_cursor := xx (play_cursor + (sound_output.latency_sample_count * sound_output.bytes_per_sample)) % sound_output.sec_buffer_size;
-            bytes_to_write: u32;  // NOTE: jai auto initializes to zero
+            bytes_to_write: u32;
 
-            // TODO: Change this to using a lower latency offset from the playcursor when we start having sound effects.
             if byte_to_lock > xx target_cursor {
                 bytes_to_write = sound_output.sec_buffer_size - byte_to_lock;  // we have this much ahead of us in the buffer to write to
                 bytes_to_write += xx target_cursor;                   // and add the first part of the buffer up to the play cursor
@@ -369,6 +375,25 @@ main :: () {
         dims := get_window_dimensions(window);
 
         win32_display_buffer_in_window(deviceContext, dims.width, dims.height);
+
+        // Frame timings
+        end_counter: s64;
+        QueryPerformanceCounter(*end_counter);
+
+        counter_elapsed := end_counter - last_counter;
+        ms_elapsed := (1000 * cast(float32) counter_elapsed) / perf_counter_frequency;
+        fps := cast(float32)perf_counter_frequency / counter_elapsed;
+
+        //  5.5367, FPS: 180.613007, cycles: 16
+        // using rdtsc
+        end_cycle_count := rdtsc();
+        cycles_elapsed := end_cycle_count - last_cycle_count;
+        mcpf := cycles_elapsed / (1000 * 1000);
+
+        log_error("ms_elapsed: %, FPS: %, cycles: % mc\n", ms_elapsed, fps, mcpf);
+
+        last_counter = end_counter;
+        last_cycle_count = end_cycle_count;
     }
 }
 
@@ -378,3 +403,4 @@ main :: () {
 #import,file "/jai/modules/Gamepad/Xinput.jai";
 #import "Sound_Player";
 #import "Math";
+#import "Machine_X64";
