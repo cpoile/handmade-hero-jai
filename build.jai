@@ -9,5 +9,5 @@
     set_build_options(options, w);
 
     // add all your files here.
-    add_build_file("src/main.jai", w);
+    add_build_file("src/win32_handmade.jai", w);
 }

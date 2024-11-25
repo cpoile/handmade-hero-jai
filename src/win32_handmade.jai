@@ -1,6 +1,23 @@
-#import "Basic";
-#import "Windows";
-#load "modules_additions/Windows.jai";
+/* TODO: This is not the final platform layer!
+
+  - Saved game locations
+  - Getting a handle to our own executable file
+  - Asset loading path
+  - Threading (launch a thread)
+  - Raw input (support for multiple keyboards)
+  - Sleep/timeBeginPeriod
+  - ClipCursor() (for muliple monitor supprot)
+  - Fullscreen support
+  - WM_SETCURSOR (control cursor visibility)
+  - QueryCancelAutoplay
+  - WM_ACTIVATEAPP (for when we are not the active application)
+  - Blit speed improvements (BitBlt)
+  - Hardware acceleration (OpenGL or Direct3D or BOTH??)
+  - GetKeyboardLayout (for French keyboards, international WASD support)
+
+  Just a partial list of stuff!
+*/
+
 
 offscreen_buffer :: struct {
     BitmapInfo : BITMAPINFO;
@@ -95,49 +112,31 @@ get_window_dimensions :: (window: HWND) -> win32_window_dimensions {
     };
 }
 
-render_weird_gradient :: (xOffset: int, yOffset: int) {
-    row : *u8 = GlobalBackBuffer.memory;
-    for y: 0..GlobalBackBuffer.height-1 {
-        pixel : *u32 = xx row;
-        for x: 0..GlobalBackBuffer.width-1 {
-            //                   1  2  3  4
-            // pixel in memory: BB GG RR xx  (bc MSFT wanted to see RGB in register (see register)
-            //     in register: xx RR GG BB  (bc it's little endian)
-            bb := cast (u8)max(((x + xOffset) % 255), 0);
-            gg := cast (u8)max(((y + yOffset) % 255), 0);
-            <<pixel = ((cast(u32) gg) << 8 | bb);
-            pixel += 1;
-        }
-
-        row += GlobalBackBuffer.pitch;
-    }
-}
-
-win32_resize_DIB_section :: (width: s32, height: s32) {
-    if GlobalBackBuffer.memory  VirtualFree(GlobalBackBuffer.memory, 0, MEM_RELEASE);
-    GlobalBackBuffer.width = width;
-    GlobalBackBuffer.height = height;
+win32_resize_DIB_section :: (back_buffer: *offscreen_buffer, width: s32, height: s32) {
+    if back_buffer.memory  VirtualFree(back_buffer.memory, 0, MEM_RELEASE);
+    back_buffer.width = width;
+    back_buffer.height = height;
     bytes_per_pixel := 4;
-    GlobalBackBuffer.pitch = width * bytes_per_pixel;
+    back_buffer.pitch = width * bytes_per_pixel;
 
     // NOTE: When the biHeight field is negative, this is the clue to Windows to treat this bitmap as top down, not
     // bottom up, meaning that the first 3 bytes of the image are the color for the top left pixel in the bitmap,
     // not the bottom left
-    GlobalBackBuffer.BitmapInfo.bmiHeader.biSize        = size_of(type_of(GlobalBackBuffer.BitmapInfo.bmiHeader));
-    GlobalBackBuffer.BitmapInfo.bmiHeader.biWidth       = width;
-    GlobalBackBuffer.BitmapInfo.bmiHeader.biHeight      = -height;
-    GlobalBackBuffer.BitmapInfo.bmiHeader.biPlanes      = 1;
-    GlobalBackBuffer.BitmapInfo.bmiHeader.biBitCount    = 32;
-    GlobalBackBuffer.BitmapInfo.bmiHeader.biCompression = BI_RGB;
+    back_buffer.BitmapInfo.bmiHeader.biSize        = size_of(type_of(back_buffer.BitmapInfo.bmiHeader));
+    back_buffer.BitmapInfo.bmiHeader.biWidth       = width;
+    back_buffer.BitmapInfo.bmiHeader.biHeight      = -height;
+    back_buffer.BitmapInfo.bmiHeader.biPlanes      = 1;
+    back_buffer.BitmapInfo.bmiHeader.biBitCount    = 32;
+    back_buffer.BitmapInfo.bmiHeader.biCompression = BI_RGB;
 
-    bitmap_memory_size      := cast(u64) ((GlobalBackBuffer.width * GlobalBackBuffer.height) * bytes_per_pixel);
-    GlobalBackBuffer.memory  = VirtualAlloc(null, bitmap_memory_size, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+    bitmap_memory_size      := cast(u64) ((back_buffer.width * back_buffer.height) * bytes_per_pixel);
+    back_buffer.memory  = VirtualAlloc(null, bitmap_memory_size, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
 }
 
-win32_display_buffer_in_window :: (deviceContext: HDC, destWidth: int, destHeight: int) {
+win32_display_buffer_in_window :: (back_buffer: *offscreen_buffer, deviceContext: HDC, destWidth: int, destHeight: int) {
     // TODO: aspect ratio correction
-    StretchDIBits(deviceContext, 0, 0, destWidth, destHeight, 0, 0, GlobalBackBuffer.width, GlobalBackBuffer.height,
-                  GlobalBackBuffer.memory, *GlobalBackBuffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
+    StretchDIBits(deviceContext, 0, 0, destWidth, destHeight, 0, 0, back_buffer.width, back_buffer.height,
+                  back_buffer.memory, *back_buffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
 }
 
 win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LParam: LPARAM) -> LRESULT #c_call {
@@ -198,7 +197,7 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
                 device_context: HDC            = BeginPaint(window, *paint);
                 dims: win32_window_dimensions = get_window_dimensions(window);
 
-                win32_display_buffer_in_window(device_context, dims.width, dims.height);
+                win32_display_buffer_in_window(*GlobalBackBuffer, device_context, dims.width, dims.height);
                 EndPaint(window, *paint);
             }
 
@@ -273,7 +272,7 @@ main :: () {
 
     window := create_window(1280, 720, "Handmade Hero");
 
-    win32_resize_DIB_section(1280, 720);
+    win32_resize_DIB_section(*GlobalBackBuffer, 1280, 720);
 
     // NOTE: since we specified CS_OWNDC (in Window_Creation/windows.jai), we can just get one device context and use it
     // forever because we are not sharing it with anyone.
@@ -350,7 +349,13 @@ main :: () {
         // vibration: XINPUT_VIBRATION = .{60000, 60000};
         // XInputSetState(0, *vibration);
 
-        render_weird_gradient(xOffset, yOffset);
+        buffer := game_offscreen_buffer.{
+            memory = GlobalBackBuffer.memory,
+            width = GlobalBackBuffer.width,
+            height = GlobalBackBuffer.height,
+            pitch = GlobalBackBuffer.pitch,
+        };
+        game_update_and_render(*buffer, xOffset, yOffset);
 
         // DirectSound output test
         play_cursor, write_cursor : s32;
@@ -374,7 +379,7 @@ main :: () {
 
         dims := get_window_dimensions(window);
 
-        win32_display_buffer_in_window(deviceContext, dims.width, dims.height);
+        win32_display_buffer_in_window(*GlobalBackBuffer, deviceContext, dims.width, dims.height);
 
         // Frame timings
         end_counter: s64;
@@ -384,8 +389,7 @@ main :: () {
         ms_elapsed := (1000 * cast(float32) counter_elapsed) / perf_counter_frequency;
         fps := cast(float32)perf_counter_frequency / counter_elapsed;
 
-        //  5.5367, FPS: 180.613007, cycles: 16
-        // using rdtsc
+        // Using rdtsc
         end_cycle_count := rdtsc();
         cycles_elapsed := end_cycle_count - last_cycle_count;
         mcpf := cycles_elapsed / (1000 * 1000);
@@ -397,7 +401,10 @@ main :: () {
     }
 }
 
-
+#load "handmade.jai";
+#import "Basic";
+#import "Windows";
+#load "modules_additions/Windows.jai";
 #import "Window_Creation";
 #import "Random";
 #import,file "/jai/modules/Gamepad/Xinput.jai";
