@@ -32,7 +32,5 @@ render_weird_gradient :: (back_buffer: *offscreen_buffer,  xOffset: int, yOffset
 // NOTE: may expand in the future
 // need FOUR THINGS: timing, controller/keyboard input, bitmap buffer to use, sound buffer to use
 game_update_and_render :: (back_buffer: *game_offscreen_buffer, xOffset: int, yOffset: int) {
-    yOffset := 0;
     render_weird_gradient(*GlobalBackBuffer, xOffset, yOffset);
-
 }
