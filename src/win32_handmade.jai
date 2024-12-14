@@ -33,7 +33,7 @@ win32_window_dimensions :: struct {
 }
 
 global_running := true;
-GlobalBackBuffer : offscreen_buffer;
+GlobalBackBuffer :offscreen_buffer;
 dsound_lib :: #system_library "dsound";
 dsound: *IDirectSound8;
 sec_buffer: *IDirectSoundBuffer8;
@@ -289,7 +289,6 @@ main :: () {
     }
 
     sound_output : win32_sound_output = .{};
-
     win32_init_dsound(window, sound_output.samples_per_second, xx sound_output.sec_buffer_size);
     win32_fill_sound_buffer(*sound_output, 0, sound_output.latency_sample_count * sound_output.bytes_per_sample);
 

@@ -9,7 +9,7 @@ game_offscreen_buffer :: struct {
     pitch      : int;
 }
 
-render_weird_gradient :: (back_buffer: *offscreen_buffer,  xOffset: int, yOffset: int) {
+render_weird_gradient :: (back_buffer: *offscreen_buffer,  xOffset: int, yOffset: int) #no_abc {
     row : *u8 = back_buffer.memory;
     for y: 0..back_buffer.height-1 {
         pixel : *u32 = xx row;
@@ -17,8 +17,8 @@ render_weird_gradient :: (back_buffer: *offscreen_buffer,  xOffset: int, yOffset
             //                   1  2  3  4
             // pixel in memory: BB GG RR xx  (bc MSFT wanted to see RGB in register (see register)
             //     in register: xx RR GG BB  (bc it's little endian)
-            bb := cast (u8)max(((x + xOffset) % 255), 0);
-            gg := cast (u8)max(((y + yOffset) % 255), 0);
+            bb := cast,trunc(u8)(x + xOffset);
+            gg := cast,trunc(u8)(y + yOffset);
             <<pixel = ((cast(u32) gg) << 8 | bb);
             pixel += 1;
         }
