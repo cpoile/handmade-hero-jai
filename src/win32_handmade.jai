@@ -19,7 +19,17 @@
 */
 
 
-offscreen_buffer :: struct {
+SAMPLE_RATE      : s32 : 48000;
+BYTES_PER_SAMPLE :: size_of(s16) * 2;
+BUFFER_SIZE      :: SAMPLE_RATE * BYTES_PER_SAMPLE;  // 1 second
+
+global_running     := true;
+global_back_buffer : Offscreen_Buffer;
+dsound_lib         :: #system_library "dsound";
+dsound             : *IDirectSound8;
+sec_sound_buffer   : *IDirectSoundBuffer8;
+
+Offscreen_Buffer :: struct {
     BitmapInfo : BITMAPINFO;
     memory     : *u8;
     width      : int;
@@ -32,13 +42,61 @@ win32_window_dimensions :: struct {
     height : int;
 }
 
-global_running := true;
-GlobalBackBuffer :offscreen_buffer;
-dsound_lib :: #system_library "dsound";
-dsound: *IDirectSound8;
-sec_buffer: *IDirectSoundBuffer8;
+win32_sound_output :: struct {
+    tone_hz               : s32 = 261;  // middle C
+    volume                : u16 = 10000;
+    running_sample_index  : s32 = 0;
+    wave_period           : s32 = SAMPLE_RATE/261; // initial value
+    tSine                 : float32;
+    latency_sample_count  :: SAMPLE_RATE/20;
+}
 
-win32_init_dsound :: (window: HWND, samples_per_second: u32, buffer_size: s32) {
+win32_fill_sound_buffer :: (
+    sound_output: *win32_sound_output,
+    source_buffer: *Game_Sound_Buffer,
+    byte_to_lock: s32,
+    bytes_to_write: s32
+) {
+
+    //  u16   u16     u16   u16    u16   u16
+    // [left right] [left right] [left right]
+    region1, region2: *void;
+    size1, size2: s32;
+    hr := sec_sound_buffer.Lock(sec_sound_buffer, byte_to_lock, bytes_to_write, *region1, *size1, *region2, *size2, 0);
+
+    if SUCCEEDED(hr) {
+        region1_sample_count : s32 = size1/BYTES_PER_SAMPLE;
+        dest_samples := cast(*s16) region1;
+        src_samples := source_buffer.samples;
+        for 0..region1_sample_count-1 {
+            <<dest_samples = <<src_samples;
+            dest_samples += 1;
+            src_samples  += 1;
+            <<dest_samples = <<src_samples;
+            dest_samples += 1;
+            src_samples  += 1;
+
+            sound_output.running_sample_index += 1 ;
+        }
+
+        region2_sample_count : s32 = size2/BYTES_PER_SAMPLE;
+        dest_samples = cast(*s16) region2;
+        for 0..region2_sample_count-1 {
+            <<dest_samples = <<src_samples;
+            dest_samples += 1;
+            src_samples  += 1;
+            <<dest_samples = <<src_samples;
+            dest_samples += 1;
+            src_samples  += 1;
+
+            sound_output.running_sample_index += 1 ;
+        }
+
+        _ = sec_sound_buffer.Unlock(sec_sound_buffer, region1, size1, region2, size2);
+    }
+}
+
+win32_init_dsound :: (window: HWND) {
     primary_buffer: *IDirectSoundBuffer8;
 
     // load the library
@@ -69,7 +127,7 @@ win32_init_dsound :: (window: HWND, samples_per_second: u32, buffer_size: s32) {
         return;
     }
 
-    KSDATAFORMAT_SUBTYPE_PCM : GUID;
+    KSDATAFORMAT_SUBTYPE_PCM: GUID;
     init_KSDATAFORMAT_SUBTYPE_PCM(*KSDATAFORMAT_SUBTYPE_PCM);
     WAVE_FORMAT_PCM :: 0x0001;
 
@@ -91,10 +149,10 @@ win32_init_dsound :: (window: HWND, samples_per_second: u32, buffer_size: s32) {
     sec_desc: DSBUFFERDESC;
     sec_desc.dwSize        = size_of(DSBUFFERDESC);
     sec_desc.dwFlags       = DSBCAPS_CTRLVOLUME | DSBCAPS_GETCURRENTPOSITION2;
-    sec_desc.dwBufferBytes = buffer_size;
+    sec_desc.dwBufferBytes = xx BUFFER_SIZE;
     sec_desc.lpwfxFormat   = *wfx.Format;
 
-    hr = dsound.vtable.CreateSoundBuffer(dsound, *sec_desc, *sec_buffer, null);
+    hr = dsound.vtable.CreateSoundBuffer(dsound, *sec_desc, *sec_sound_buffer, null);
     if FAILED(hr) {
         log_error("CreateSoundBuffer failed!\n");
         return;
@@ -112,8 +170,8 @@ get_window_dimensions :: (window: HWND) -> win32_window_dimensions {
     };
 }
 
-win32_resize_DIB_section :: (back_buffer: *offscreen_buffer, width: s32, height: s32) {
-    if back_buffer.memory  VirtualFree(back_buffer.memory, 0, MEM_RELEASE);
+win32_resize_DIB_section :: (back_buffer: *Offscreen_Buffer, width: s32, height: s32) {
+    if back_buffer.memory  free(back_buffer.memory);
     back_buffer.width = width;
     back_buffer.height = height;
     bytes_per_pixel := 4;
@@ -129,11 +187,11 @@ win32_resize_DIB_section :: (back_buffer: *offscreen_buffer, width: s32, height:
     back_buffer.BitmapInfo.bmiHeader.biBitCount    = 32;
     back_buffer.BitmapInfo.bmiHeader.biCompression = BI_RGB;
 
-    bitmap_memory_size      := cast(u64) ((back_buffer.width * back_buffer.height) * bytes_per_pixel);
-    back_buffer.memory  = VirtualAlloc(null, bitmap_memory_size, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+    bitmap_memory_size := ((back_buffer.width * back_buffer.height) * bytes_per_pixel);
+    back_buffer.memory = alloc(bitmap_memory_size);
 }
 
-win32_display_buffer_in_window :: (back_buffer: *offscreen_buffer, deviceContext: HDC, destWidth: int, destHeight: int) {
+win32_display_buffer_in_window :: (back_buffer: *Offscreen_Buffer, deviceContext: HDC, destWidth: int, destHeight: int) {
     // TODO: aspect ratio correction
     StretchDIBits(deviceContext, 0, 0, destWidth, destHeight, 0, 0, back_buffer.width, back_buffer.height,
                   back_buffer.memory, *back_buffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
@@ -197,7 +255,7 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
                 device_context: HDC            = BeginPaint(window, *paint);
                 dims: win32_window_dimensions = get_window_dimensions(window);
 
-                win32_display_buffer_in_window(*GlobalBackBuffer, device_context, dims.width, dims.height);
+                win32_display_buffer_in_window(*global_back_buffer, device_context, dims.width, dims.height);
                 EndPaint(window, *paint);
             }
 
@@ -213,66 +271,14 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 #add_context _windows_windowproc :: win32_main_window_callback;
 #add_context _windows_windowproc_allocator: Allocator;
 
-win32_sound_output :: struct {
-    samples_per_second :: 48000;
-    tone_hz : float32 = 261;  // middle C
-    volume : s16 = 10000;
-    running_sample_index : u32 = 0;
-    wave_period : float32 = samples_per_second/261; // initial value
-    bytes_per_sample :: size_of(u16)*2;
-    sec_buffer_size : u32 = samples_per_second*bytes_per_sample;
-    tSine : float32;
-    latency_sample_count :: samples_per_second/20;
-}
-
-win32_fill_sound_buffer :: (sound_output: *win32_sound_output, byte_to_lock: u32, bytes_to_write: u32) {
-    //  u16   u16     u16   u16    u16   u16
-    // [left right] [left right] [left right]
-    region1, region2: *void;
-    size1, size2: s32;
-    hr := sec_buffer.Lock(sec_buffer, cast(s32) byte_to_lock, cast(s32) bytes_to_write,
-                         *region1, *size1, *region2, *size2, 0);
-
-    if SUCCEEDED(hr) {
-        region1_sample_count : s32 = size1/sound_output.bytes_per_sample;
-        sample_out := cast(*s16) region1;
-        for 0..region1_sample_count-1 {
-            sine_val := sin(sound_output.tSine);
-            sample_value : s16 = xx (sine_val * sound_output.volume);
-            sample_out.* = sample_value;
-            sample_out += 1;
-            sample_out.* = sample_value;
-            sample_out += 1;
-
-            sound_output.tSine += 2.0 * PI / sound_output.wave_period;
-            sound_output.running_sample_index += 1 ;
-        }
-
-        region2_sample_count : s32 = size2/sound_output.bytes_per_sample;
-        sample_out = cast(*s16) region2;
-        for 0..region2_sample_count-1 {
-            sine_val := sin(sound_output.tSine);
-            sample_value : s16 = xx (sine_val * sound_output.volume);
-            sample_out.* = sample_value;
-            sample_out += 1;
-            sample_out.* = sample_value;
-            sample_out += 1;
-
-            sound_output.tSine += 2.0 * PI / sound_output.wave_period;
-            sound_output.running_sample_index += 1;
-        }
-
-        hr = sec_buffer.Unlock(sec_buffer, region1, size1, region2, size2);
-    }
-}
-
 main :: () {
     perf_counter_frequency : s64;   // frequency is per second
     QueryPerformanceFrequency(*perf_counter_frequency);
 
     window := create_window(1280, 720, "Handmade Hero");
 
-    win32_resize_DIB_section(*GlobalBackBuffer, 1280, 720);
+    win32_resize_DIB_section(*global_back_buffer, 1280, 720);
+    defer free(global_back_buffer.memory);
 
     // NOTE: since we specified CS_OWNDC (in Window_Creation/windows.jai), we can just get one device context and use it
     // forever because we are not sharing it with anyone.
@@ -289,13 +295,16 @@ main :: () {
     }
 
     sound_output : win32_sound_output = .{};
-    win32_init_dsound(window, sound_output.samples_per_second, xx sound_output.sec_buffer_size);
-    win32_fill_sound_buffer(*sound_output, 0, sound_output.latency_sample_count * sound_output.bytes_per_sample);
-
-    hr := sec_buffer.Play(sec_buffer, 0, 0, DSBPLAY_LOOPING);
+    win32_init_dsound(window);
+    // no need to clear the secondary sound buffer in Jai, it's initialized to zero.
+    hr := sec_sound_buffer.Play(sec_sound_buffer, 0, 0, DSBPLAY_LOOPING);
     if FAILED(hr) {
         log_error("Play failed!");
     }
+
+    // TODO: pool with bitmap make
+    samples := alloc(BUFFER_SIZE);
+    defer free(samples);
 
     last_counter: s64;
     last_cycle_count := rdtsc();
@@ -338,47 +347,50 @@ main :: () {
                 xOffset += stick_x / 4096;
                 yOffset -= stick_y / 4096;
 
-                sound_output.tone_hz = 512 + 256.0*(stick_y / 30000.0);
-                sound_output.wave_period = sound_output.samples_per_second/sound_output.tone_hz;
+                sound_output.tone_hz = cast(s32)(512 + 256.0*(stick_y / 30000.0));
+                sound_output.wave_period = SAMPLE_RATE/sound_output.tone_hz;
             } else {
                 // controller not available
             }
         }
 
-        // vibration: XINPUT_VIBRATION = .{60000, 60000};
-        // XInputSetState(0, *vibration);
-
-        buffer := game_offscreen_buffer.{
-            memory = GlobalBackBuffer.memory,
-            width = GlobalBackBuffer.width,
-            height = GlobalBackBuffer.height,
-            pitch = GlobalBackBuffer.pitch,
-        };
-        game_update_and_render(*buffer, xOffset, yOffset);
-
         // DirectSound output test
-        play_cursor, write_cursor : s32;
-        hr := sec_buffer.GetCurrentPosition(sec_buffer, *play_cursor, *write_cursor);
+        byte_to_lock, target_cursor, bytes_to_write, play_cursor, write_cursor: s32;
+
+        // TODO: Tighten up sound logic so that we know where we should be
+        // writing to and can anticipate the time spent in the game update.
+        hr := sec_sound_buffer.GetCurrentPosition(sec_sound_buffer, *play_cursor, *write_cursor);
         if FAILED(hr) {
             log_error("GetCurrentPosition failed!");
         } else {
-            byte_to_lock : u32 = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.sec_buffer_size;
-            target_cursor := xx (play_cursor + (sound_output.latency_sample_count * sound_output.bytes_per_sample)) % sound_output.sec_buffer_size;
-            bytes_to_write: u32;
+            byte_to_lock = (sound_output.running_sample_index * BYTES_PER_SAMPLE) % BUFFER_SIZE;
+            target_cursor = (play_cursor + (sound_output.latency_sample_count * BYTES_PER_SAMPLE)) % BUFFER_SIZE;
 
-            if byte_to_lock > xx target_cursor {
-                bytes_to_write = sound_output.sec_buffer_size - byte_to_lock;  // we have this much ahead of us in the buffer to write to
-                bytes_to_write += xx target_cursor;                   // and add the first part of the buffer up to the play cursor
+            if byte_to_lock > target_cursor {
+                bytes_to_write = BUFFER_SIZE - byte_to_lock;  // we have this much ahead of us in the buffer to write to
+                bytes_to_write += target_cursor;                   // and add the first part of the buffer up to the play cursor
             } else {
-                bytes_to_write = xx target_cursor - byte_to_lock;    // we only have to fill from byte_to_lock up to the play_cursor
+                bytes_to_write = target_cursor - byte_to_lock;    // we only have to fill from byte_to_lock up to the play_cursor
             }
-
-            win32_fill_sound_buffer(*sound_output, byte_to_lock, bytes_to_write);
         }
+
+        game_sound_buffer := Game_Sound_Buffer.{
+            samples_per_second = SAMPLE_RATE,
+            samples_count      = bytes_to_write / BYTES_PER_SAMPLE,
+            samples            = samples,
+        };
+        buffer := Game_Offscreen_Buffer.{
+            memory = global_back_buffer.memory,
+            width  = global_back_buffer.width,
+            height = global_back_buffer.height,
+            pitch  = global_back_buffer.pitch,
+        };
+        game_update_and_render(*buffer, *game_sound_buffer, xOffset, yOffset, sound_output.tone_hz);
+        win32_fill_sound_buffer(*sound_output, *game_sound_buffer, byte_to_lock, bytes_to_write);
 
         dims := get_window_dimensions(window);
 
-        win32_display_buffer_in_window(*GlobalBackBuffer, deviceContext, dims.width, dims.height);
+        win32_display_buffer_in_window(*global_back_buffer, deviceContext, dims.width, dims.height);
 
         // Frame timings
         end_counter: s64;
@@ -393,7 +405,9 @@ main :: () {
         cycles_elapsed := end_cycle_count - last_cycle_count;
         mcpf := cycles_elapsed / (1000 * 1000);
 
-        log_error("ms_elapsed: %, FPS: %, cycles: % mc\n", ms_elapsed, fps, mcpf);
+ #if false {
+            log_error("ms_elapsed: %, FPS: %, cycles: % mc\n", ms_elapsed, fps, mcpf);
+ }
 
         last_counter = end_counter;
         last_cycle_count = end_cycle_count;
