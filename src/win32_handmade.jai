@@ -48,6 +48,65 @@ win32_sound_output :: struct {
     latency_sample_count  :: SAMPLE_RATE/15;
 }
 
+// Services that the platform layer provides the game
+//
+#if HANDMADE_INTERNAL {
+
+// NOTE: These are not for anything in the shipping game.
+//  They are blocking and the write doesn't protect against lost data!
+
+DEBUG_platform_read_entire_file :: (filename: string) -> memory: []u8, ok: bool {
+    fh := CreateFileW(U.utf8_to_wide_new(filename), GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
+
+    if !fh return .{}, false;
+
+    size_large: LARGE_INTEGER;
+    s_res := GetFileSizeEx(fh, *size_large);
+    if !s_res {return .{}, false;}
+
+    size := size_large.LowPart;
+    assert(size <= U32_MAX);
+
+    raw_mem := VirtualAlloc(null, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+
+    if raw_mem == null {return .{}, false;}
+
+    memory : []u8 = .{size, raw_mem};
+
+    bytes_read: DWORD;
+    ok := ReadFile(fh, raw_mem, size, *bytes_read, null);
+
+    if !ok || bytes_read != size {
+        DEBUG_platform_free_file_memory(*memory);
+        return .{}, false;
+    }
+
+    if CloseHandle(fh) == 0 {
+        DEBUG_platform_free_file_memory(*memory);
+        return .{}, false;
+    }
+
+    return memory, true;
+}
+
+DEBUG_platform_free_file_memory :: (memory: *[]u8) {
+    VirtualFree(memory.data, 0, MEM_RELEASE);
+    memory.count = 0;
+}
+DEBUG_platform_write_entire_file :: (filename: string, memory: []u8) -> bool {
+    fh := CreateFileW(U.utf8_to_wide_new(filename), GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
+
+    if !fh {return false;}
+
+    bytes_written: DWORD;
+    ok := WriteFile(fh, memory.data, cast(u32)memory.count, *bytes_written, null);
+    if !ok {return false;}
+
+    return bytes_written == memory.count;
+}
+}
+
+
 win32_fill_sound_buffer :: (
     sound_output: *win32_sound_output,
     source_buffer: *Game_Sound_Buffer,
@@ -477,3 +536,4 @@ main :: () {
 #import "Sound_Player";
 #import "Math";
 #import "Machine_X64";
+U :: #import "Windows_Utf8";

@@ -78,7 +78,7 @@ game_sound_output :: (sound_buffer: *Game_Sound_Buffer, tone_hz: s32) {
 }
 
 
-render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer,  xOffset: int, yOffset: int) #no_abc {
+render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer,  xOffset: int, yOffset: int) {
     row := back_buffer.memory;
     for y: 0..back_buffer.height-1 {
         pixel := cast(*u32) row;
@@ -105,7 +105,7 @@ game_update_and_render :: (
     input        : *Game_Input,
     back_buffer  : *Game_Offscreen_Buffer,
     sound_buffer : *Game_Sound_Buffer
-) {
+) -> bool {
     #if HANDMADE_DEBUG {
         assert(size_of(Game_State) <= game_memory.permanent.count);
     }
@@ -114,6 +114,13 @@ game_update_and_render :: (
     if !state.initialized {
         state.tone_hz = 256;
         state.initialized = true;
+
+        bitmap_memory, success := DEBUG_platform_read_entire_file(#file);
+        if !success return false;  // TODO: ofc we'll do some real error handling when needed.
+
+        DEBUG_platform_write_entire_file("../data/test_file_output.txt", bitmap_memory);
+
+        DEBUG_platform_free_file_memory(*bitmap_memory);
     }
 
     input_0 := input.controllers[0];
@@ -131,6 +138,8 @@ game_update_and_render :: (
     game_sound_output(sound_buffer, state.tone_hz);
 
     render_weird_gradient(back_buffer, state.blue_offset, state.green_offset);
+
+    return true;
 }
 
 #import "Basic";
