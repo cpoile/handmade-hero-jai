@@ -15,6 +15,33 @@ Game_Sound_Buffer :: struct {
     samples            : *s16;
 }
 
+Game_Button_State :: struct {
+    half_transition_count : u8;
+    ended_down            : bool;
+}
+
+Game_Controller_Input :: struct {
+    analog         : bool;
+    start_x        : float32;
+    start_y        : float32;
+    min_x          : float32;
+    min_y          : float32;
+    max_x          : float32;
+    max_y          : float32;
+    end_x          : float32;
+    end_y          : float32;
+    a              : Game_Button_State;
+    b              : Game_Button_State;
+    x              : Game_Button_State;
+    y              : Game_Button_State;
+    left_shoulder  : Game_Button_State;
+    right_shoulder : Game_Button_State;
+}
+
+Game_Input :: struct {
+    controllers: [4]Game_Controller_Input;
+}
+
 game_sound_output :: (sound_buffer: *Game_Sound_Buffer, tone_hz: s32) {
     tone_volume := 3000;
     wave_period := sound_buffer.samples_per_second / tone_hz;
@@ -56,19 +83,33 @@ render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer,  xOffset: int, yO
 // NOTE: may expand in the future
 // need FOUR THINGS: timing, controller/keyboard input, bitmap buffer to use, sound buffer to use
 game_update_and_render :: (
-    back_buffer: *Game_Offscreen_Buffer,
-    sound_buffer: *Game_Sound_Buffer,
-    blue_offset: int,
-    green_offset: int,
-    tone_hz: s32
+    input        : *Game_Input,
+    back_buffer  : *Game_Offscreen_Buffer,
+    sound_buffer : *Game_Sound_Buffer
 ) {
+    input_0 := input.controllers[0];
+
+    if input_0.analog {
+        // NOTE: Use analog movement tuning
+        tone_hz = cast(s32)clamp(261 + 64 * input_0.end_y, 120, 1566);
+        blue_offset += cast(s32)(input_0.end_x * 4);
+        green_offset -= cast(s32)(input_0.end_y * 4);
+    } else {
+        // NOTE: Use digital movement tuning.
+    }
+
     // TODO: Allow sample offsets here (eg, set sound further out in the future, or closer to immediately)
     game_sound_output(sound_buffer, tone_hz);
 
     render_weird_gradient(back_buffer, blue_offset, green_offset);
 }
 
+#import "Basic";
 #import "Math";
 
+// statics:
 #scope_file
-t_sine: float32;
+t_sine       : float32;
+blue_offset  : s32;
+green_offset : s32;
+tone_hz      : s32 = 256;

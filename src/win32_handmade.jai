@@ -43,12 +43,9 @@ win32_window_dimensions :: struct {
 }
 
 win32_sound_output :: struct {
-    tone_hz               : s32 = 261;  // middle C
-    volume                : u16 = 10000;
     running_sample_index  : s32 = 0;
     wave_period           : s32 = SAMPLE_RATE/261; // initial value
-    tSine                 : float32;
-    latency_sample_count  :: SAMPLE_RATE/20;
+    latency_sample_count  :: SAMPLE_RATE/15;
 }
 
 win32_fill_sound_buffer :: (
@@ -62,9 +59,7 @@ win32_fill_sound_buffer :: (
     // [left right] [left right] [left right]
     region1, region2: *void;
     size1, size2: s32;
-    hr := sec_sound_buffer.Lock(sec_sound_buffer, byte_to_lock, bytes_to_write, *region1, *size1, *region2, *size2, 0);
-
-    if SUCCEEDED(hr) {
+    if SUCCEEDED(sec_sound_buffer.Lock(sec_sound_buffer, byte_to_lock, bytes_to_write, *region1, *size1, *region2, *size2, 0)) {
         region1_sample_count : s32 = size1/BYTES_PER_SAMPLE;
         dest_samples := cast(*s16) region1;
         src_samples := source_buffer.samples;
@@ -197,6 +192,16 @@ win32_display_buffer_in_window :: (back_buffer: *Offscreen_Buffer, deviceContext
                   back_buffer.memory, *back_buffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
 }
 
+win32_process_xinput_digital_button :: (
+    old_state: Game_Button_State,
+    new_state: *Game_Button_State,
+    button_bit: u16,
+    button_state: u16
+) {
+    new_state.ended_down = button_state & button_bit != 0;
+    new_state.half_transition_count += xx ifx old_state.ended_down != new_state.ended_down  1;
+}
+
 win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LParam: LPARAM) -> LRESULT #c_call {
     new_context: Context;
 
@@ -284,10 +289,6 @@ main :: () {
     // forever because we are not sharing it with anyone.
     deviceContext := GetDC(window);
 
-    // NOTE: graphics test
-    xOffset := 0;
-    yOffset := 0;
-
     success := init_xinput();
     if !success {
         OutputDebugStringA("Error: Could not initialize xinput!");
@@ -311,6 +312,9 @@ main :: () {
     QueryPerformanceCounter(*last_counter);
 
     message: MSG;
+    new_input := Game_Input.{};
+    old_input := Game_Input.{};
+
     while (global_running)
     {
         if PeekMessageA(*message, null, 0, 0, PM_REMOVE) {
@@ -322,6 +326,9 @@ main :: () {
 
         // TODO: Should we poll this more frequently?
         for controller_index: 0..XUSER_MAX_COUNT-1 {
+            old_controller := *old_input.controllers[controller_index];
+            new_controller := *new_input.controllers[controller_index];
+
             controller_state: XINPUT_STATE;
             if XInputGetState(xx controller_index, *controller_state) == 0 /*ERROR_SUCCESS*/ {
                 pad := *controller_state.Gamepad;
@@ -329,26 +336,44 @@ main :: () {
                 down := pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
                 left := pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
                 right := pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
+
+                denom : float32 = xx ifx pad.sThumbLX < 0 then 32768 else 32767;
+                x := cast(float32)pad.sThumbLX / denom;
+                denom = xx ifx pad.sThumbLY < 0 then 32768 else 32767;
+                y := cast(float32)pad.sThumbLY / denom;
+
+                new_controller.analog = true;
+                new_controller.start_x = old_controller.end_x;
+                new_controller.start_y = old_controller.end_y;
+                new_controller.min_x = x;
+                new_controller.max_x = x;
+                new_controller.end_x = x;
+                new_controller.min_y = y;
+                new_controller.max_y = y;
+                new_controller.end_y = y;
+
+                win32_process_xinput_digital_button(old_controller.a, *new_controller.a, pad.wButtons, XINPUT_GAMEPAD_A);
+                win32_process_xinput_digital_button(old_controller.b, *new_controller.b, pad.wButtons, XINPUT_GAMEPAD_B);
+                win32_process_xinput_digital_button(old_controller.x, *new_controller.x, pad.wButtons, XINPUT_GAMEPAD_X);
+                win32_process_xinput_digital_button(old_controller.y, *new_controller.y, pad.wButtons, XINPUT_GAMEPAD_Y);
+                win32_process_xinput_digital_button(
+                    old_controller.left_shoulder,
+                    *new_controller.left_shoulder,
+                    pad.wButtons,
+                    XINPUT_GAMEPAD_LEFT_SHOULDER,
+                );
+                win32_process_xinput_digital_button(
+                    old_controller.right_shoulder,
+                    *new_controller.right_shoulder,
+                    pad.wButtons,
+                    XINPUT_GAMEPAD_RIGHT_SHOULDER,
+                );
+
                 start := pad.wButtons & XINPUT_GAMEPAD_START;
                 back := pad.wButtons & XINPUT_GAMEPAD_BACK;
-                left_shoulder := pad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
-                right_shoulder := pad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
-                a_button := pad.wButtons & XINPUT_GAMEPAD_A;
-                b_button := pad.wButtons & XINPUT_GAMEPAD_B;
-                x_button := pad.wButtons & XINPUT_GAMEPAD_X;
-                y_button := pad.wButtons & XINPUT_GAMEPAD_Y;
 
-                stick_x := pad.sThumbLX;
-                stick_y := pad.sThumbLY;
-
-                // NOTE: we will do deadzone handling later:
-                // XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE
-                // XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE
-                xOffset += stick_x / 4096;
-                yOffset -= stick_y / 4096;
-
-                sound_output.tone_hz = cast(s32)(512 + 256.0*(stick_y / 30000.0));
-                sound_output.wave_period = SAMPLE_RATE/sound_output.tone_hz;
+                // sound_output.tone_hz = cast(s32)(512 + 256.0*(stick_y / 30000.0));
+                // sound_output.wave_period = SAMPLE_RATE/sound_output.tone_hz;
             } else {
                 // controller not available
             }
@@ -385,7 +410,7 @@ main :: () {
             height = global_back_buffer.height,
             pitch  = global_back_buffer.pitch,
         };
-        game_update_and_render(*buffer, *game_sound_buffer, xOffset, yOffset, sound_output.tone_hz);
+        game_update_and_render(*new_input, *buffer, *game_sound_buffer);
         win32_fill_sound_buffer(*sound_output, *game_sound_buffer, byte_to_lock, bytes_to_write);
 
         dims := get_window_dimensions(window);
@@ -411,6 +436,8 @@ main :: () {
 
         last_counter = end_counter;
         last_cycle_count = end_cycle_count;
+
+        new_input, old_input = old_input, new_input;
     }
 }
 
