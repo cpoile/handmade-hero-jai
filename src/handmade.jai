@@ -1,5 +1,23 @@
 // Platform-independent game code
 
+// Useful macros
+KILOBYTES :: (v: $T) -> T #expand { return v * 1024; }
+MEGABYTES :: (v: $T) -> T #expand { return KILOBYTES(v) * 1024; }
+GIGABYTES :: (v: $T) -> T #expand { return MEGABYTES(v) * 1024; }
+TERABYTES :: (v: $T) -> T #expand { return GIGABYTES(v) * 1024; }
+
+Game_Memory :: struct {
+    permanent : []u8;
+    temporary : []u8;
+}
+
+Game_State :: struct {
+    initialized  : bool;
+    blue_offset  : s32;
+    green_offset : s32;
+    tone_hz      : s32;
+}
+
 // TODO: In the future, rendering _specifically_ will become a three-tiered abstraction!!
 Game_Offscreen_Buffer :: struct {
     // NOTE: Pixels are always 32-bits wide, Memory Order BB GG RR XX
@@ -61,9 +79,9 @@ game_sound_output :: (sound_buffer: *Game_Sound_Buffer, tone_hz: s32) {
 
 
 render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer,  xOffset: int, yOffset: int) #no_abc {
-    row : *u8 = back_buffer.memory;
+    row := back_buffer.memory;
     for y: 0..back_buffer.height-1 {
-        pixel : *u32 = xx row;
+        pixel := cast(*u32) row;
         for x: 0..back_buffer.width-1 {
             //                   1  2  3  4
             // pixel in memory: BB GG RR xx  (bc MSFT wanted to see RGB in register (see register)
@@ -83,25 +101,36 @@ render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer,  xOffset: int, yO
 // NOTE: may expand in the future
 // need FOUR THINGS: timing, controller/keyboard input, bitmap buffer to use, sound buffer to use
 game_update_and_render :: (
+    game_memory  : *Game_Memory,
     input        : *Game_Input,
     back_buffer  : *Game_Offscreen_Buffer,
     sound_buffer : *Game_Sound_Buffer
 ) {
+    #if HANDMADE_DEBUG {
+        assert(size_of(Game_State) <= game_memory.permanent.count);
+    }
+
+    state := cast(*Game_State)game_memory.permanent.data;
+    if !state.initialized {
+        state.tone_hz = 256;
+        state.initialized = true;
+    }
+
     input_0 := input.controllers[0];
 
     if input_0.analog {
         // NOTE: Use analog movement tuning
-        tone_hz = cast(s32)clamp(261 + 64 * input_0.end_y, 120, 1566);
-        blue_offset += cast(s32)(input_0.end_x * 4);
-        green_offset -= cast(s32)(input_0.end_y * 4);
+        state.tone_hz = cast(s32)clamp(261 + 64 * input_0.end_y, 120, 1566);
+        state.blue_offset += cast(s32)(input_0.end_x * 4);
+        state.green_offset -= cast(s32)(input_0.end_y * 4);
     } else {
         // NOTE: Use digital movement tuning.
     }
 
     // TODO: Allow sample offsets here (eg, set sound further out in the future, or closer to immediately)
-    game_sound_output(sound_buffer, tone_hz);
+    game_sound_output(sound_buffer, state.tone_hz);
 
-    render_weird_gradient(back_buffer, blue_offset, green_offset);
+    render_weird_gradient(back_buffer, state.blue_offset, state.green_offset);
 }
 
 #import "Basic";

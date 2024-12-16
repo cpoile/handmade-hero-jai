@@ -11,4 +11,18 @@
 
     // add all your files here.
     add_build_file("src/win32_handmade.jai", w);
+
+    // HANDMADE_INTERNAL indicates when we're trying to do something that we'de only want to do internally
+    //  (e.g., specify allocator pointer positions)
+
+    build_constants := tprint(#string STRING
+            HANDMADE_INTERNAL :: %;
+            HANDMADE_DEBUG    :: %;
+        STRING,
+            true,
+            true,
+    );
+    add_build_string(build_constants, w);
 }
+
+#import "Basic";

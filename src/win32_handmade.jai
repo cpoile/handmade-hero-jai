@@ -307,6 +307,32 @@ main :: () {
     samples := alloc(BUFFER_SIZE);
     defer free(samples);
 
+    // NOTE: Casey uses VirtualAlloc, so I'm going to do the same (for now). We're simulating our own allocator, so why not go raw.
+
+    #if HANDMADE_INTERNAL {
+        // in windows 64-bit, first 8 terabytes are reserved for the application
+        base_address := cast(*void)TERABYTES(2);
+    } else {
+        base_address : *void = null;
+    }
+    permanent_len := MEGABYTES(64);
+    temporary_len := GIGABYTES(4);
+
+    // TODO: Handle various memory footprints.
+    total_size := permanent_len + temporary_len;
+    permanent_mem := VirtualAlloc(base_address, xx total_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    temporary_mem := permanent_mem + permanent_len;
+
+    if (permanent_mem == null || temporary_mem == null) {
+        log_error("Could not allocate memory for game, exiting!");
+        return;
+    }
+
+    game_memory := Game_Memory.{
+        permanent = .{permanent_len, permanent_mem},
+        temporary = .{temporary_len, temporary_mem},
+    };
+
     last_counter: s64;
     last_cycle_count := rdtsc();
     QueryPerformanceCounter(*last_counter);
@@ -410,7 +436,7 @@ main :: () {
             height = global_back_buffer.height,
             pitch  = global_back_buffer.pitch,
         };
-        game_update_and_render(*new_input, *buffer, *game_sound_buffer);
+        game_update_and_render(*game_memory, *new_input, *buffer, *game_sound_buffer);
         win32_fill_sound_buffer(*sound_output, *game_sound_buffer, byte_to_lock, bytes_to_write);
 
         dims := get_window_dimensions(window);
@@ -430,7 +456,7 @@ main :: () {
         cycles_elapsed := end_cycle_count - last_cycle_count;
         mcpf := cycles_elapsed / (1000 * 1000);
 
- #if false {
+ #if HANDMADE_INTERNAL {
             log_error("ms_elapsed: %, FPS: %, cycles: % mc\n", ms_elapsed, fps, mcpf);
  }
 
