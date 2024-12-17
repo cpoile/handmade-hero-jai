@@ -23,11 +23,12 @@ SAMPLE_RATE      : s32 : 48000;
 BYTES_PER_SAMPLE :: size_of(s16) * 2;
 BUFFER_SIZE      :: SAMPLE_RATE * BYTES_PER_SAMPLE;  // 1 second
 
-global_running     := true;
-global_back_buffer : Offscreen_Buffer;
-dsound_lib         :: #system_library "dsound";
-dsound             : *IDirectSound8;
-sec_sound_buffer   : *IDirectSoundBuffer8;
+global_running           := true;
+global_back_buffer       : Offscreen_Buffer;
+dsound_lib               :: #system_library "dsound";
+dsound                   : *IDirectSound8;
+global_sec_sound_buffer  : *IDirectSoundBuffer8;
+global_perf_counter_freq : s64;
 
 Offscreen_Buffer :: struct {
     BitmapInfo : BITMAPINFO;
@@ -118,7 +119,7 @@ win32_fill_sound_buffer :: (
     // [left right] [left right] [left right]
     region1, region2: *void;
     size1, size2: s32;
-    if SUCCEEDED(sec_sound_buffer.Lock(sec_sound_buffer, byte_to_lock, bytes_to_write, *region1, *size1, *region2, *size2, 0)) {
+    if SUCCEEDED(global_sec_sound_buffer.Lock(global_sec_sound_buffer, byte_to_lock, bytes_to_write, *region1, *size1, *region2, *size2, 0)) {
         region1_sample_count : s32 = size1/BYTES_PER_SAMPLE;
         dest_samples := cast(*s16) region1;
         src_samples := source_buffer.samples;
@@ -146,7 +147,7 @@ win32_fill_sound_buffer :: (
             sound_output.running_sample_index += 1 ;
         }
 
-        _ = sec_sound_buffer.Unlock(sec_sound_buffer, region1, size1, region2, size2);
+        _ = global_sec_sound_buffer.Unlock(global_sec_sound_buffer, region1, size1, region2, size2);
     }
 }
 
@@ -206,7 +207,7 @@ win32_init_dsound :: (window: HWND) {
     sec_desc.dwBufferBytes = xx BUFFER_SIZE;
     sec_desc.lpwfxFormat   = *wfx.Format;
 
-    hr = dsound.vtable.CreateSoundBuffer(dsound, *sec_desc, *sec_sound_buffer, null);
+    hr = dsound.vtable.CreateSoundBuffer(dsound, *sec_desc, *global_sec_sound_buffer, null);
     if FAILED(hr) {
         log_error("CreateSoundBuffer failed!\n");
         return;
@@ -358,9 +359,28 @@ win32_process_messages :: (keyboard_controller: *Game_Controller_Input) {
     }
 }
 
+win32_get_wall_clock :: inline () -> s64 {
+    res: s64;
+    QueryPerformanceCounter(*res);
+    return res;
+}
+
+win32_get_seconds_elapsed :: inline (start: s64, end: s64) -> float32 {
+    return cast(float32)(end - start) / cast(float32)global_perf_counter_freq;
+}
+
 main :: () {
-    perf_counter_frequency : s64;   // frequency is per second
-    QueryPerformanceFrequency(*perf_counter_frequency);
+    QueryPerformanceFrequency(*global_perf_counter_freq);
+
+    // NOTE: Set the windows scheduler granularity, so our sleep can be better
+    desired_scheduler_ms :: 1;
+    sleep_is_granular := timeBeginPeriod(desired_scheduler_ms) == TIMERR_NOERROR;
+
+    monitor_refresh_hz :: 60;
+    // TODO: how do we reliably query this on Windows?
+    game_update_hz :: 30;
+    target_ms_per_game_update := 1000 / cast(float32)game_update_hz;
+    target_seconds_per_frame := cast(float32)1 / cast(float32)game_update_hz;
 
     window := create_window(1280, 720, "Handmade Hero");
 
@@ -380,7 +400,7 @@ main :: () {
     sound_output : win32_sound_output = .{};
     win32_init_dsound(window);
     // no need to clear the secondary sound buffer in Jai, it's initialized to zero.
-    hr := sec_sound_buffer.Play(sec_sound_buffer, 0, 0, DSBPLAY_LOOPING);
+    hr := global_sec_sound_buffer.Play(global_sec_sound_buffer, 0, 0, DSBPLAY_LOOPING);
     if FAILED(hr) {
         log_error("Play failed!");
     }
@@ -415,11 +435,9 @@ main :: () {
         temporary = .{temporary_len, temporary_mem},
     };
 
-#if false {
-    last_counter: s64;
+    // Frame timings
+    last_counter := win32_get_wall_clock();
     last_cycle_count := rdtsc();
-    QueryPerformanceCounter(*last_counter);
-}
 
     message: MSG;
     new_input := Game_Input.{};
@@ -497,7 +515,7 @@ main :: () {
 
         // TODO: Tighten up sound logic so that we know where we should be
         // writing to and can anticipate the time spent in the game update.
-        hr := sec_sound_buffer.GetCurrentPosition(sec_sound_buffer, *play_cursor, *write_cursor);
+        hr := global_sec_sound_buffer.GetCurrentPosition(global_sec_sound_buffer, *play_cursor, *write_cursor);
         if FAILED(hr) {
             log_error("GetCurrentPosition failed!");
         } else {
@@ -526,18 +544,31 @@ main :: () {
         game_update_and_render(*game_memory, *new_input, *buffer, *game_sound_buffer);
         win32_fill_sound_buffer(*sound_output, *game_sound_buffer, byte_to_lock, bytes_to_write);
 
-        dims := get_window_dimensions(window);
+        // Frame timings
+        work_counter := win32_get_wall_clock();
+        work_sec_elapsed := win32_get_seconds_elapsed(last_counter, work_counter);
 
+        sec_elapsed_for_frame := work_sec_elapsed;
+        if sec_elapsed_for_frame < target_seconds_per_frame {
+            if sleep_is_granular {
+                sleep_ms := cast(s32)(1000 * (target_seconds_per_frame - sec_elapsed_for_frame)) - 1;  // -1 makes it work...
+                if sleep_ms > 0  Sleep(sleep_ms);
+            }
+            assert(sec_elapsed_for_frame < target_seconds_per_frame);
+            while sec_elapsed_for_frame < target_seconds_per_frame {
+                sec_elapsed_for_frame = win32_get_seconds_elapsed(last_counter, win32_get_wall_clock());
+            }
+        } else {
+            log_error("sec_elapsed_for_frame > target_seconds_per_frame, missed a frame!");
+        }
+
+        // FLIP THE FRAME:
+        dims := get_window_dimensions(window);
         win32_display_buffer_in_window(*global_back_buffer, deviceContext, dims.width, dims.height);
 
-        // Frame timings
-        end_counter: s64;
-        QueryPerformanceCounter(*end_counter);
-
-#if false {
-        counter_elapsed := end_counter - last_counter;
-        ms_elapsed := (1000 * cast(float32) counter_elapsed) / perf_counter_frequency;
-        fps := cast(float32)perf_counter_frequency / counter_elapsed;
+        end_counter := win32_get_wall_clock();
+        ms_per_frame := cast(float32) win32_get_seconds_elapsed(last_counter, end_counter);
+        fps := 0.0;
 
         // Using rdtsc
         end_cycle_count := rdtsc();
@@ -545,12 +576,12 @@ main :: () {
         mcpf := cycles_elapsed / (1000 * 1000);
 
  #if HANDMADE_INTERNAL {
-            log_error("ms_elapsed: %, FPS: %, cycles: % mc\n", ms_elapsed, fps, mcpf);
+        OutputDebugStringA(to_c_string(tprint("ms_per_frame: %, FPS: %, cycles: % mc\n", ms_per_frame, fps, mcpf),, temp));
  }
 
-        last_counter = end_counter;
+        last_counter = win32_get_wall_clock();
         last_cycle_count = end_cycle_count;
-}
+
         new_input, old_input = old_input, new_input;
     }
 }
