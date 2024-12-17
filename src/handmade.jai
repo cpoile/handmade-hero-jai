@@ -48,6 +48,10 @@ Game_Controller_Input :: struct {
     max_y          : float32;
     end_x          : float32;
     end_y          : float32;
+    up             : Game_Button_State;
+    down           : Game_Button_State;
+    left           : Game_Button_State;
+    right          : Game_Button_State;
     a              : Game_Button_State;
     b              : Game_Button_State;
     x              : Game_Button_State;
@@ -57,7 +61,7 @@ Game_Controller_Input :: struct {
 }
 
 Game_Input :: struct {
-    controllers: [4]Game_Controller_Input;
+    controllers: [5]Game_Controller_Input;
 }
 
 game_sound_output :: (sound_buffer: *Game_Sound_Buffer, tone_hz: s32) {
@@ -133,6 +137,12 @@ game_update_and_render :: (
     } else {
         // NOTE: Use digital movement tuning.
     }
+    // TODO: what to do about this analog thing?
+    state.blue_offset += cast(s32)(input_0.right.half_transition_count * 4);
+    state.blue_offset -= cast(s32)(input_0.left.half_transition_count * 4);
+    state.green_offset -= cast(s32)(input_0.up.half_transition_count * 4);
+    state.green_offset += cast(s32)(input_0.down.half_transition_count * 4);
+
 
     // TODO: Allow sample offsets here (eg, set sound further out in the future, or closer to immediately)
     game_sound_output(sound_buffer, state.tone_hz);

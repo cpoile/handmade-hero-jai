@@ -52,58 +52,58 @@ win32_sound_output :: struct {
 //
 #if HANDMADE_INTERNAL {
 
-// NOTE: These are not for anything in the shipping game.
-//  They are blocking and the write doesn't protect against lost data!
+    // NOTE: These are not for anything in the shipping game.
+    //  They are blocking and the write doesn't protect against lost data!
 
-DEBUG_platform_read_entire_file :: (filename: string) -> memory: []u8, ok: bool {
-    fh := CreateFileW(U.utf8_to_wide_new(filename), GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
+    DEBUG_platform_read_entire_file :: (filename: string) -> memory: []u8, ok: bool {
+        fh := CreateFileW(U.utf8_to_wide_new(filename), GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
 
-    if !fh return .{}, false;
+        if !fh return .{}, false;
 
-    size_large: LARGE_INTEGER;
-    s_res := GetFileSizeEx(fh, *size_large);
-    if !s_res {return .{}, false;}
+        size_large: LARGE_INTEGER;
+        s_res := GetFileSizeEx(fh, *size_large);
+        if !s_res {return .{}, false;}
 
-    size := size_large.LowPart;
-    assert(size <= U32_MAX);
+        size := size_large.LowPart;
+        assert(size <= U32_MAX);
 
-    raw_mem := VirtualAlloc(null, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        raw_mem := VirtualAlloc(null, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 
-    if raw_mem == null {return .{}, false;}
+        if raw_mem == null {return .{}, false;}
 
-    memory : []u8 = .{size, raw_mem};
+        memory : []u8 = .{size, raw_mem};
 
-    bytes_read: DWORD;
-    ok := ReadFile(fh, raw_mem, size, *bytes_read, null);
+        bytes_read: DWORD;
+        ok := ReadFile(fh, raw_mem, size, *bytes_read, null);
 
-    if !ok || bytes_read != size {
-        DEBUG_platform_free_file_memory(*memory);
-        return .{}, false;
+        if !ok || bytes_read != size {
+            DEBUG_platform_free_file_memory(*memory);
+            return .{}, false;
+        }
+
+        if CloseHandle(fh) == 0 {
+            DEBUG_platform_free_file_memory(*memory);
+            return .{}, false;
+        }
+
+        return memory, true;
     }
 
-    if CloseHandle(fh) == 0 {
-        DEBUG_platform_free_file_memory(*memory);
-        return .{}, false;
+    DEBUG_platform_free_file_memory :: (memory: *[]u8) {
+        VirtualFree(memory.data, 0, MEM_RELEASE);
+        memory.count = 0;
     }
+    DEBUG_platform_write_entire_file :: (filename: string, memory: []u8) -> bool {
+        fh := CreateFileW(U.utf8_to_wide_new(filename), GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
 
-    return memory, true;
-}
+        if !fh {return false;}
 
-DEBUG_platform_free_file_memory :: (memory: *[]u8) {
-    VirtualFree(memory.data, 0, MEM_RELEASE);
-    memory.count = 0;
-}
-DEBUG_platform_write_entire_file :: (filename: string, memory: []u8) -> bool {
-    fh := CreateFileW(U.utf8_to_wide_new(filename), GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
+        bytes_written: DWORD;
+        ok := WriteFile(fh, memory.data, cast(u32)memory.count, *bytes_written, null);
+        if !ok {return false;}
 
-    if !fh {return false;}
-
-    bytes_written: DWORD;
-    ok := WriteFile(fh, memory.data, cast(u32)memory.count, *bytes_written, null);
-    if !ok {return false;}
-
-    return bytes_written == memory.count;
-}
+        return bytes_written == memory.count;
+    }
 }
 
 
@@ -261,6 +261,9 @@ win32_process_xinput_digital_button :: (
     new_state.half_transition_count += xx ifx old_state.ended_down != new_state.ended_down  1;
 }
 
+#add_context _windows_windowproc :: win32_main_window_callback;
+#add_context _windows_windowproc_allocator: Allocator;
+
 win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LParam: LPARAM) -> LRESULT #c_call {
     new_context: Context;
 
@@ -284,26 +287,7 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
             case WM_SYSKEYUP;    #through;
             case WM_KEYDOWN;     #through;
             case WM_KEYUP; {
-                vk_code: u32 = xx WParam;
-                altDown := (LParam & (1 << 29)) != 0;
-                wasDown := (LParam & (1 << 30)) != 0;
-                isDown := (LParam & (1 << 31)) == 0;
-                if (isDown != wasDown) {
-                    // NOTE: not real code, just a placeholder, later we'll use a switch or something.
-                    if vk_code == VK_F4 && altDown  global_running = false;
-                    else if vk_code == #char "W"    OutputDebugStringA("W\n");
-                    else if vk_code == #char "A"    OutputDebugStringA("A\n");
-                    else if vk_code == #char "R"    OutputDebugStringA("R\n");
-                    else if vk_code == #char "S"    OutputDebugStringA("S\n");
-                    else if vk_code == #char "Q"    OutputDebugStringA("Q\n");
-                    else if vk_code == #char "F"    OutputDebugStringA("F\n");
-                    else if vk_code == VK_UP        OutputDebugStringA("up\n");
-                    else if vk_code == VK_DOWN      OutputDebugStringA("down\n");
-                    else if vk_code == VK_LEFT      OutputDebugStringA("left\n");
-                    else if vk_code == VK_RIGHT     OutputDebugStringA("Right\n");
-                    else if vk_code == VK_ESCAPE    OutputDebugStringA(to_c_string(tprint("Escape is down? % was down? %\n", isDown, wasDown),, temp));
-                    else if vk_code == VK_SPACE     OutputDebugStringA("Space\n");
-                }
+                assert(false, "Keyboard input came in through a non-dispatch message!");
             }
 
             case WM_CLOSE; {
@@ -332,8 +316,46 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
     }
 };
 
-#add_context _windows_windowproc :: win32_main_window_callback;
-#add_context _windows_windowproc_allocator: Allocator;
+win32_process_keyboard_message :: (new_state: *Game_Button_State, isDown: bool) {
+    new_state.ended_down = isDown;
+    new_state.half_transition_count += 1;
+}
+
+win32_process_messages :: (keyboard_controller: *Game_Controller_Input) {
+    message: MSG;
+    while PeekMessageA(*message, null, 0, 0, PM_REMOVE) {
+        if message.message == {
+        case WM_QUIT;        global_running = false;
+        case WM_SYSKEYDOWN;  #through;
+        case WM_SYSKEYUP;    #through;
+        case WM_KEYDOWN;     #through;
+        case WM_KEYUP;
+            vk_code := cast(u32)message.wParam;
+            altDown := (message.lParam & (1 << 29)) != 0;
+            wasDown := (message.lParam & (1 << 30)) != 0;
+            isDown  := (message.lParam & (1 << 31)) == 0;
+            if (isDown != wasDown) {
+                if vk_code == {
+                case VK_F4;      if altDown  global_running = false;
+                case #char "W";  win32_process_keyboard_message(*keyboard_controller.up, isDown);
+                case #char "R";  win32_process_keyboard_message(*keyboard_controller.down, isDown);
+                case #char "A";  win32_process_keyboard_message(*keyboard_controller.left, isDown);
+                case #char "S";  win32_process_keyboard_message(*keyboard_controller.right, isDown);
+                case #char "Q";  win32_process_keyboard_message(*keyboard_controller.left_shoulder, isDown);
+                case #char "F";  win32_process_keyboard_message(*keyboard_controller.right_shoulder, isDown);
+                case VK_UP;      win32_process_keyboard_message(*keyboard_controller.up, isDown);
+                case VK_DOWN;    win32_process_keyboard_message(*keyboard_controller.down, isDown);
+                case VK_LEFT;    win32_process_keyboard_message(*keyboard_controller.left, isDown);
+                case VK_RIGHT;   win32_process_keyboard_message(*keyboard_controller.right, isDown);
+                case VK_ESCAPE;  global_running = false;
+                }
+            }
+        case;
+            TranslateMessage(*message);
+            DispatchMessageA(*message);
+        }
+    }
+}
 
 main :: () {
     perf_counter_frequency : s64;   // frequency is per second
@@ -392,35 +414,36 @@ main :: () {
         temporary = .{temporary_len, temporary_mem},
     };
 
+#if false {
     last_counter: s64;
     last_cycle_count := rdtsc();
     QueryPerformanceCounter(*last_counter);
+}
 
     message: MSG;
     new_input := Game_Input.{};
     old_input := Game_Input.{};
 
-    while (global_running)
-    {
-        if PeekMessageA(*message, null, 0, 0, PM_REMOVE) {
-            if message.message == WM_QUIT  global_running = false;
+    while (global_running) {
+        // zero the keyboard at the start of each frame
+        // TODO: we can't zero everything because the up/down state will be wrong (we can't hold down the key)
+        keyboard_controller := *new_input.controllers[0];
+        <<keyboard_controller = .{};
 
-            TranslateMessage(*message);
-            DispatchMessageA(*message);
-        }
+        win32_process_messages(keyboard_controller);
 
         // TODO: Should we poll this more frequently?
-        for controller_index: 0..XUSER_MAX_COUNT-1 {
+        for controller_index: 1..XUSER_MAX_COUNT {
             old_controller := *old_input.controllers[controller_index];
             new_controller := *new_input.controllers[controller_index];
 
             controller_state: XINPUT_STATE;
             if XInputGetState(xx controller_index, *controller_state) == 0 /*ERROR_SUCCESS*/ {
                 pad := *controller_state.Gamepad;
-                up := pad.wButtons & XINPUT_GAMEPAD_DPAD_UP;
-                down := pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
-                left := pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
-                right := pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
+                // up := pad.wButtons & XINPUT_GAMEPAD_DPAD_UP;
+                // down := pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
+                // left := pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
+                // right := pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
 
                 denom : float32 = xx ifx pad.sThumbLX < 0 then 32768 else 32767;
                 x := cast(float32)pad.sThumbLX / denom;
@@ -454,8 +477,8 @@ main :: () {
                     XINPUT_GAMEPAD_RIGHT_SHOULDER,
                 );
 
-                start := pad.wButtons & XINPUT_GAMEPAD_START;
-                back := pad.wButtons & XINPUT_GAMEPAD_BACK;
+                // start := pad.wButtons & XINPUT_GAMEPAD_START;
+                // back := pad.wButtons & XINPUT_GAMEPAD_BACK;
 
                 // sound_output.tone_hz = cast(s32)(512 + 256.0*(stick_y / 30000.0));
                 // sound_output.wave_period = SAMPLE_RATE/sound_output.tone_hz;
@@ -506,6 +529,7 @@ main :: () {
         end_counter: s64;
         QueryPerformanceCounter(*end_counter);
 
+#if false {
         counter_elapsed := end_counter - last_counter;
         ms_elapsed := (1000 * cast(float32) counter_elapsed) / perf_counter_frequency;
         fps := cast(float32)perf_counter_frequency / counter_elapsed;
@@ -521,7 +545,7 @@ main :: () {
 
         last_counter = end_counter;
         last_cycle_count = end_cycle_count;
-
+}
         new_input, old_input = old_input, new_input;
     }
 }
