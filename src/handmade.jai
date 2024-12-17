@@ -1,5 +1,7 @@
 // Platform-independent game code
 
+MAX_INPUTS :: 5;  // 4 controllers + keyboard
+
 // Useful macros
 KILOBYTES :: (v: $T) -> T #expand { return v * 1024; }
 MEGABYTES :: (v: $T) -> T #expand { return KILOBYTES(v) * 1024; }
@@ -39,29 +41,33 @@ Game_Button_State :: struct {
 }
 
 Game_Controller_Input :: struct {
+    is_connected   : bool;
     analog         : bool;
-    start_x        : float32;
-    start_y        : float32;
-    min_x          : float32;
-    min_y          : float32;
-    max_x          : float32;
-    max_y          : float32;
-    end_x          : float32;
-    end_y          : float32;
-    up             : Game_Button_State;
-    down           : Game_Button_State;
-    left           : Game_Button_State;
-    right          : Game_Button_State;
-    a              : Game_Button_State;
-    b              : Game_Button_State;
-    x              : Game_Button_State;
-    y              : Game_Button_State;
-    left_shoulder  : Game_Button_State;
-    right_shoulder : Game_Button_State;
+    stick_avg_x    : float32;
+    stick_avg_y    : float32;
+    union {
+        buttons: [12]Game_Button_State;
+        struct {
+            up             : Game_Button_State;
+            down           : Game_Button_State;
+            left           : Game_Button_State;
+            right          : Game_Button_State;
+            a              : Game_Button_State;
+            b              : Game_Button_State;
+            x              : Game_Button_State;
+            y              : Game_Button_State;
+            left_shoulder  : Game_Button_State;
+            right_shoulder : Game_Button_State;
+            back           : Game_Button_State;
+            start          : Game_Button_State;
+            // NOTE: always add new buttons above the terminator
+            terminator     : Game_Button_State;
+        }
+    }
 }
 
 Game_Input :: struct {
-    controllers: [5]Game_Controller_Input;
+    controllers: [MAX_INPUTS]Game_Controller_Input;
 }
 
 game_sound_output :: (sound_buffer: *Game_Sound_Buffer, tone_hz: s32) {
@@ -112,6 +118,7 @@ game_update_and_render :: (
 ) -> bool {
     #if HANDMADE_DEBUG {
         assert(size_of(Game_State) <= game_memory.permanent.count);
+        assert((*input.controllers[0].terminator - *input.controllers[0].up) == input.controllers[0].buttons.count);
     }
 
     state := cast(*Game_State)game_memory.permanent.data;
@@ -127,22 +134,21 @@ game_update_and_render :: (
         DEBUG_platform_free_file_memory(*bitmap_memory);
     }
 
-    input_0 := input.controllers[0];
+    for i: 0..MAX_INPUTS-1 {
+        cur_input := input.controllers[i];
 
-    if input_0.analog {
-        // NOTE: Use analog movement tuning
-        state.tone_hz = cast(s32)clamp(261 + 64 * input_0.end_y, 120, 1566);
-        state.blue_offset += cast(s32)(input_0.end_x * 4);
-        state.green_offset -= cast(s32)(input_0.end_y * 4);
-    } else {
-        // NOTE: Use digital movement tuning.
+        if cur_input.analog {
+            // NOTE: Use analog movement tuning
+            state.tone_hz       = cast(s32)clamp(261 + 64 * cur_input.stick_avg_y, 120, 1566);
+            state.blue_offset  += cast(s32)(cur_input.stick_avg_x * 4);
+            state.green_offset -= cast(s32)(cur_input.stick_avg_y * 4);
+        } else {
+            state.blue_offset  += cast(s32)((ifx cur_input.right.ended_down 1 else 0) * 4);
+            state.blue_offset  -= cast(s32)((ifx cur_input.left.ended_down 1 else 0) * 4);
+            state.green_offset -= cast(s32)((ifx cur_input.up.ended_down 1 else 0) * 4);
+            state.green_offset += cast(s32)((ifx cur_input.down.ended_down 1 else 0) * 4);
+        }
     }
-    // TODO: what to do about this analog thing?
-    state.blue_offset += cast(s32)(input_0.right.half_transition_count * 4);
-    state.blue_offset -= cast(s32)(input_0.left.half_transition_count * 4);
-    state.green_offset -= cast(s32)(input_0.up.half_transition_count * 4);
-    state.green_offset += cast(s32)(input_0.down.half_transition_count * 4);
-
 
     // TODO: Allow sample offsets here (eg, set sound further out in the future, or closer to immediately)
     game_sound_output(sound_buffer, state.tone_hz);

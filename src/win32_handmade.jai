@@ -44,7 +44,7 @@ win32_window_dimensions :: struct {
 
 win32_sound_output :: struct {
     running_sample_index  : s32 = 0;
-    wave_period           : s32 = SAMPLE_RATE/261; // initial value
+    wave_period           : s32 = SAMPLE_RATE/261;
     latency_sample_count  :: SAMPLE_RATE/15;
 }
 
@@ -317,6 +317,7 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 };
 
 win32_process_keyboard_message :: (new_state: *Game_Button_State, isDown: bool) {
+    assert(new_state.ended_down != isDown);  // should only enter when isDown changes
     new_state.ended_down = isDown;
     new_state.half_transition_count += 1;
 }
@@ -426,16 +427,20 @@ main :: () {
 
     while (global_running) {
         // zero the keyboard at the start of each frame
-        // TODO: we can't zero everything because the up/down state will be wrong (we can't hold down the key)
-        keyboard_controller := *new_input.controllers[0];
-        <<keyboard_controller = .{};
+        old_keyboard_controller := *old_input.controllers[0];
+        new_keyboard_controller := *new_input.controllers[0];
+        <<new_keyboard_controller = .{is_connected = true};
+        for i: 0..9 {  // 10 buttons
+            new_keyboard_controller.buttons[i].ended_down = old_keyboard_controller.buttons[i].ended_down;
+        }
 
-        win32_process_messages(keyboard_controller);
+        win32_process_messages(new_keyboard_controller);
 
+        // TODO: Need to not poll disconnected controllers to avoid xinput frame rate hit on older libraries
         // TODO: Should we poll this more frequently?
-        for controller_index: 1..XUSER_MAX_COUNT {
-            old_controller := *old_input.controllers[controller_index];
-            new_controller := *new_input.controllers[controller_index];
+        for controller_index: 0..XUSER_MAX_COUNT-1 {
+            old_controller := *old_input.controllers[controller_index+1];  // +1 bc keyboard is 0
+            new_controller := *new_input.controllers[controller_index+1];
 
             controller_state: XINPUT_STATE;
             if XInputGetState(xx controller_index, *controller_state) == 0 /*ERROR_SUCCESS*/ {
@@ -445,20 +450,23 @@ main :: () {
                 // left := pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
                 // right := pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
 
-                denom : float32 = xx ifx pad.sThumbLX < 0 then 32768 else 32767;
+                // TODO: this is a square deadzone, check XINPUT to verify if the deadzone is round
+                dzone := XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
+                denom : float32 = xx ifx pad.sThumbLX < dzone then 32768 else 32767;
                 x := cast(float32)pad.sThumbLX / denom;
-                denom = xx ifx pad.sThumbLY < 0 then 32768 else 32767;
+                denom = xx ifx pad.sThumbLY < -dzone then 32768 else 32767;
                 y := cast(float32)pad.sThumbLY / denom;
 
                 new_controller.analog = true;
-                new_controller.start_x = old_controller.end_x;
-                new_controller.start_y = old_controller.end_y;
-                new_controller.min_x = x;
-                new_controller.max_x = x;
-                new_controller.end_x = x;
-                new_controller.min_y = y;
-                new_controller.max_y = y;
-                new_controller.end_y = y;
+                new_controller.stick_avg_x = x;
+                new_controller.stick_avg_y = y;
+
+                if pad.wButtons & XINPUT_GAMEPAD_DPAD_UP     new_controller.stick_avg_y = 1;
+                if pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN   new_controller.stick_avg_y = -1;
+                if pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT   new_controller.stick_avg_x = -1;
+                if pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT  new_controller.stick_avg_x = 1;
+
+                // NOTE: not doing the stick->move_up/down/etc mapping that Casey did. Maybe I'll do it if we need it later.
 
                 win32_process_xinput_digital_button(old_controller.a, *new_controller.a, pad.wButtons, XINPUT_GAMEPAD_A);
                 win32_process_xinput_digital_button(old_controller.b, *new_controller.b, pad.wButtons, XINPUT_GAMEPAD_B);
@@ -477,11 +485,8 @@ main :: () {
                     XINPUT_GAMEPAD_RIGHT_SHOULDER,
                 );
 
-                // start := pad.wButtons & XINPUT_GAMEPAD_START;
-                // back := pad.wButtons & XINPUT_GAMEPAD_BACK;
-
-                // sound_output.tone_hz = cast(s32)(512 + 256.0*(stick_y / 30000.0));
-                // sound_output.wave_period = SAMPLE_RATE/sound_output.tone_hz;
+                win32_process_xinput_digital_button(old_controller.back, *new_controller.back, pad.wButtons, XINPUT_GAMEPAD_BACK);
+                win32_process_xinput_digital_button(old_controller.start, *new_controller.start, pad.wButtons, XINPUT_GAMEPAD_START);
             } else {
                 // controller not available
             }
