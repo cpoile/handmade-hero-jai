@@ -29,8 +29,11 @@ GAME_UPDATE_HZ            :: 30;
 TARGET_MS_PER_GAME_UPDATE :: 1000 / cast(float32)GAME_UPDATE_HZ;
 TARGET_SECONDS_PER_FRAME  :: 1 / cast(float32)GAME_UPDATE_HZ;
 LATENCY_SAMPLE_COUNT      :: FRAMES_OF_AUDIO_LATENCY * (SAMPLE_RATE / GAME_UPDATE_HZ);
+// TODO: compute to see how low we can go
+SAFETY_BYTES              :: ((SAMPLE_RATE * BYTES_PER_SAMPLE) / GAME_UPDATE_HZ) / 3;
 
 global_running           := true;
+global_pause             := false;
 global_back_buffer       : Offscreen_Buffer;
 dsound_lib               :: #system_library "dsound";
 dsound                   : *IDirectSound8;
@@ -268,7 +271,7 @@ win32_debug_draw_vertical :: (back_buffer: *Offscreen_Buffer, x: s32, top: s32, 
 
 win32_debug_sync_display :: (back_buffer: *Offscreen_Buffer, last_play_cursor_count: u16, last_play_cursors: []s32,
     sound_output: *win32_sound_output) {
-    // TODO: draw where we're writing out sound
+    // TODO: draw where we're writing out sound  --  doesn't match Casey's code in this proc
 
     pad_x  : s32 = 16;
     pad_y  : s32 = 16;
@@ -308,14 +311,14 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 
         if message == {
             case WM_CREATE;
-                OutputDebugStringA("WM_CREATE\n");
+                win32_debug("WM_CREATE\n");
 
             case WM_SIZE;
-                OutputDebugStringA("WM_SIZE\n");
+                win32_debug("WM_SIZE\n");
 
             case WM_DESTROY;
                 global_running = false;
-                OutputDebugStringA("WM_DESTROY\n");
+                win32_debug("WM_DESTROY\n");
 
             case WM_SYSKEYDOWN;  #through;
             case WM_SYSKEYUP;    #through;
@@ -326,11 +329,11 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 
             case WM_CLOSE; {
                 global_running = false;
-                OutputDebugStringA("WM_CLOSE\n");
+                win32_debug("WM_CLOSE\n");
             }
 
             case WM_ACTIVATEAPP;
-                OutputDebugStringA("WM_ACTIVATEAPP\n");
+                win32_debug("WM_ACTIVATEAPP\n");
 
             case WM_PAINT; {
                 paint: PAINTSTRUCT;
@@ -342,7 +345,7 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
             }
 
             case;
-                //            OutputDebugStringA("default\n")
+                //            win32_debug("default\n")
                 result = DefWindowProcA(window, message, WParam, LParam);
         }
 
@@ -383,6 +386,7 @@ win32_process_messages :: (keyboard_controller: *Game_Controller_Input) {
                 case VK_LEFT;    win32_process_keyboard_message(*keyboard_controller.left, isDown);
                 case VK_RIGHT;   win32_process_keyboard_message(*keyboard_controller.right, isDown);
                 case VK_ESCAPE;  global_running = false;
+                case #char "P";  if isDown  global_pause = !global_pause;
                 }
             }
         case;
@@ -421,7 +425,7 @@ main :: () {
 
     success := init_xinput();
     if !success {
-        OutputDebugStringA("Error: Could not initialize xinput!");
+        win32_debug("Error: Could not initialize xinput!");
         return;
     }
 
@@ -464,15 +468,16 @@ main :: () {
     };
 
     // Frame timings
-    last_counter := win32_get_wall_clock();
+    last_counter     := win32_get_wall_clock();
     last_cycle_count := rdtsc();
-
-    // TODO: handle startup specially
-    last_play_cursor : s32 = 0;
-    sound_is_valid   := false;
+    flip_wall_clock  := win32_get_wall_clock();
 
     debug_last_play_cursor_index : u16 = 0;
     debug_last_play_cursor: [GAME_UPDATE_HZ / 2]s32;
+
+    audio_latency_bytes : s32;
+    audio_latency_sec   : float32;
+    sound_is_valid      := false;
 
     message: MSG;
     new_input := Game_Input.{};
@@ -545,33 +550,100 @@ main :: () {
             }
         }
 
-        // DirectSound output test
-        byte_to_lock, target_cursor, bytes_to_write: s32;
-        if sound_is_valid {
-            byte_to_lock = (sound_output.running_sample_index * BYTES_PER_SAMPLE) % SOUND_BUFFER_SIZE;
-            target_cursor = (last_play_cursor + (LATENCY_SAMPLE_COUNT * BYTES_PER_SAMPLE)) % SOUND_BUFFER_SIZE;
-
-            if byte_to_lock > target_cursor {
-                bytes_to_write = SOUND_BUFFER_SIZE - byte_to_lock;  // we have this much ahead of us in the buffer to write to
-                bytes_to_write += target_cursor;                   // and add the first part of the buffer up to the play cursor
-            } else {
-                bytes_to_write = target_cursor - byte_to_lock;    // we only have to fill from byte_to_lock up to the play_cursor
-            }
-        }
-
-        game_sound_buffer := Game_Sound_Buffer.{
-            samples_per_second = SAMPLE_RATE,
-            samples_count      = bytes_to_write / BYTES_PER_SAMPLE,
-            samples            = samples,
-        };
         buffer := Game_Offscreen_Buffer.{
             memory = global_back_buffer.memory,
             width  = global_back_buffer.width,
             height = global_back_buffer.height,
             pitch  = global_back_buffer.pitch,
         };
-        game_update_and_render(*game_memory, *new_input, *buffer, *game_sound_buffer);
-        win32_fill_sound_buffer(*sound_output, *game_sound_buffer, byte_to_lock, bytes_to_write);
+        game_update_and_render(*game_memory, *new_input, *buffer);
+
+
+        // DirectSound output test
+        /* NOTE: How sound output computation works
+            We define a safety value that is the number of samples we think our game update loop may vary by (let's say up to 2ms).
+            When we wake up to write audio, we will look atnd see what the play cursor position is and we will forecast
+            ahead where we think the play cursor will be on the next frame boundary.
+
+            We will then look to see if the write cursor is before that. If it is, the target fill position is that frame
+            boundary plus one frame. we will write up to the next frame boundary from the write cursor, and then one frame.
+            This gives us perfect audio sync in the case of a card that has low enough latency.
+
+            If the write cursor is _after_ that safety margin, then we assume we can never sync the audio perfectly,
+            so we will write one frame's worth of audio plus plus the safety margin's worth of guard samples.
+        */
+
+        audio_wall_clock := win32_get_wall_clock();
+        from_begin_to_audio_seconds := win32_get_seconds_elapsed(flip_wall_clock, audio_wall_clock);
+        play_cursor, write_cursor: s32;
+        // write cursor is where it's safe to write, play_cursor is where we are right now,
+        // so write_cursor - play_cursor (+ wraparound) is our minimum latency
+        if FAILED(global_sound_buffer.GetCurrentPosition(global_sound_buffer, *play_cursor, *write_cursor)) {
+            win32_debug("Error in GetCurrentPosition");
+            sound_is_valid = false;
+        } else {
+            byte_to_lock, target_cursor, bytes_to_write: s32;
+
+            if !sound_is_valid {
+                // we must be starting, or we failed getting position sometime earlier
+                sound_output.running_sample_index = write_cursor / BYTES_PER_SAMPLE;
+                sound_is_valid = true;
+            }
+
+            expected_sound_bytes_per_frame := (SAMPLE_RATE * BYTES_PER_SAMPLE) / GAME_UPDATE_HZ;
+            expected_frame_boundary_byte := play_cursor + expected_sound_bytes_per_frame;
+
+            // used for Casey's debugging lines (which we aren't drawing):
+            seconds_left_until_flip := TARGET_SECONDS_PER_FRAME - from_begin_to_audio_seconds;
+            expected_bytes_until_flip := (seconds_left_until_flip / TARGET_SECONDS_PER_FRAME) * cast(float32) expected_sound_bytes_per_frame;
+
+            safe_write_cursor := write_cursor;
+            if safe_write_cursor < play_cursor {
+                safe_write_cursor += SOUND_BUFFER_SIZE;
+            }
+            assert(safe_write_cursor >= play_cursor);
+
+            safe_write_cursor += SAFETY_BYTES;
+            audio_card_is_low_latency := safe_write_cursor < expected_frame_boundary_byte;
+
+            byte_to_lock = (sound_output.running_sample_index * BYTES_PER_SAMPLE) % SOUND_BUFFER_SIZE;
+            if audio_card_is_low_latency {
+                target_cursor = expected_frame_boundary_byte + expected_sound_bytes_per_frame;
+            } else {
+                target_cursor = write_cursor + expected_sound_bytes_per_frame + SAFETY_BYTES;
+            }
+            target_cursor %= SOUND_BUFFER_SIZE;
+
+            if byte_to_lock > target_cursor {
+                bytes_to_write = SOUND_BUFFER_SIZE - byte_to_lock; // we have this much ahead of us in the buffer to write to
+                bytes_to_write += target_cursor; // and add the first part of the buffer up to the play cursor
+            } else {
+                bytes_to_write = target_cursor - byte_to_lock; // we only have to fill from bytes_to_lock up to the play_cursor
+            }
+
+            game_sound_buffer := Game_Sound_Buffer.{
+                samples_per_second = SAMPLE_RATE,
+                samples_count      = bytes_to_write / BYTES_PER_SAMPLE,
+                samples            = samples,
+            };
+            game_get_sound_samples(*game_memory, *game_sound_buffer);
+            win32_fill_sound_buffer(*sound_output, *game_sound_buffer, byte_to_lock, bytes_to_write);
+
+            wrapped_around := play_cursor > write_cursor;
+            audio_latency_bytes = ifx wrapped_around then write_cursor + SOUND_BUFFER_SIZE - play_cursor else write_cursor - play_cursor;
+            audio_latency_sec = (cast(float32)audio_latency_bytes / cast(float32)BYTES_PER_SAMPLE / cast(float32)SAMPLE_RATE);
+
+            win32_debug(
+                    "BTL:  % -  PC: %  WC: %  TC: %  DELTA: %  LATENCY_SEC: %  Low Latency? %\n",
+                    byte_to_lock,
+                    play_cursor,
+                    write_cursor,
+                    target_cursor,
+                    audio_latency_bytes,
+                    audio_latency_sec,
+                    audio_card_is_low_latency
+            );
+        }
 
         // Frame timings
         work_counter := win32_get_wall_clock();
@@ -583,6 +655,7 @@ main :: () {
                 sleep_ms := cast(s32)(1000 * (TARGET_SECONDS_PER_FRAME - sec_elapsed_for_frame)) - 1;  // -1 makes it work...
                 if sleep_ms > 0  Sleep(sleep_ms);
             }
+
             sec_elapsed_for_frame = win32_get_seconds_elapsed(last_counter, win32_get_wall_clock());
             //assert(sec_elapsed_for_frame < TARGET_SECONDS_PER_FRAME);
             while sec_elapsed_for_frame < TARGET_SECONDS_PER_FRAME {
@@ -603,20 +676,23 @@ main :: () {
         win32_debug_sync_display(*global_back_buffer, debug_last_play_cursor_index, debug_last_play_cursor, *sound_output);
 }
 
-        win32_display_buffer_in_window(*global_back_buffer, deviceContext, dims.width, dims.height);
-
-        // We want the play cursor that we sampled back when we flipped the previous frame, and we want to add our frame latency into that.
-        play_cursor: s32;
-        write_cursor: s32;
-        if SUCCEEDED(global_sound_buffer.GetCurrentPosition(global_sound_buffer, *play_cursor, *write_cursor)) {
-            last_play_cursor = play_cursor;
-            sound_is_valid = true;
-        } else {
-            sound_is_valid = false;
+        if !global_pause {
+            win32_display_buffer_in_window(*global_back_buffer, deviceContext, dims.width, dims.height);
         }
+        flip_wall_clock = win32_get_wall_clock();
 
 #if HANDMADE_INTERNAL {
         // NOTE: this is debug code
+        // We want the play cursor that we sampled back when we flipped the previous frame, and we want to add our frame latency into that.
+        // play_cursor: s32;
+        // write_cursor: s32;
+        // if SUCCEEDED(global_sound_buffer.GetCurrentPosition(global_sound_buffer, *play_cursor, *write_cursor)) {
+        //     last_play_cursor = play_cursor;
+        //     sound_is_valid = true;
+        // } else {
+        //     sound_is_valid = false;
+        // }
+
         debug_last_play_cursor[debug_last_play_cursor_index] = play_cursor;
         debug_last_play_cursor_index += 1;
         debug_last_play_cursor_index %= debug_last_play_cursor.count;
@@ -629,13 +705,17 @@ main :: () {
         fps := 0.0;
 
  #if HANDMADE_INTERNAL {
-        OutputDebugStringA(to_c_string(tprint("ms_per_frame: %, FPS: %, cycles: % mc\n", ms_per_frame, fps, mcpf),, temp));
+        win32_debug("ms_per_frame: %, FPS: %, cycles: % mc\n", ms_per_frame, fps, mcpf);
  }
 
         last_cycle_count = end_cycle_count;
 
         new_input, old_input = old_input, new_input;
     }
+}
+
+win32_debug :: (msg: string, args: ..Any) {
+    OutputDebugStringA(to_c_string(tprint(msg, ..args),, temp));
 }
 
 #load "handmade.jai";

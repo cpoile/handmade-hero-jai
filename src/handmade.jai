@@ -66,8 +66,20 @@ Game_Controller_Input :: struct {
     }
 }
 
+/**/
+
+
 Game_Input :: struct {
     controllers: [MAX_INPUTS]Game_Controller_Input;
+}
+
+
+// NOTE: at the moment this has to be a very fast function, it cannot be more than a ms or so.
+game_get_sound_samples :: (game_memory: *Game_Memory, sound_buffer: *Game_Sound_Buffer) {
+    // TODO: Allow sample offsets here (eg, set sound further out in the future, or closer to immediately)
+    state := cast(*Game_State)game_memory.permanent.data;
+
+    game_sound_output(sound_buffer, state.tone_hz);
 }
 
 game_sound_output :: (sound_buffer: *Game_Sound_Buffer, tone_hz: s32) {
@@ -84,6 +96,9 @@ game_sound_output :: (sound_buffer: *Game_Sound_Buffer, tone_hz: s32) {
         sample_out += 1;
 
         t_sine += 2.0 * PI / cast(float32)wave_period;
+        if t_sine > 2.0 * PI {
+            t_sine -= 2.0 * PI;
+        }
     }
 }
 
@@ -110,12 +125,7 @@ render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer,  xOffset: int, yO
 
 // NOTE: may expand in the future
 // need FOUR THINGS: timing, controller/keyboard input, bitmap buffer to use, sound buffer to use
-game_update_and_render :: (
-    game_memory  : *Game_Memory,
-    input        : *Game_Input,
-    back_buffer  : *Game_Offscreen_Buffer,
-    sound_buffer : *Game_Sound_Buffer
-) -> bool {
+game_update_and_render :: (game_memory: *Game_Memory, input: *Game_Input, back_buffer: *Game_Offscreen_Buffer) -> bool {
     #if HANDMADE_DEBUG {
         assert(size_of(Game_State) <= game_memory.permanent.count);
         assert((*input.controllers[0].terminator - *input.controllers[0].up) == input.controllers[0].buttons.count);
@@ -140,18 +150,15 @@ game_update_and_render :: (
         if cur_input.analog {
             // NOTE: Use analog movement tuning
             state.tone_hz       = cast(s32)clamp(261 + 64 * cur_input.stick_avg_y, 120, 1566);
-            state.blue_offset  += cast(s32)(cur_input.stick_avg_x * 4);
-            state.green_offset -= cast(s32)(cur_input.stick_avg_y * 4);
+            state.blue_offset  += cast(s32)(cur_input.stick_avg_x * 15);
+            state.green_offset -= cast(s32)(cur_input.stick_avg_y * 15);
         } else {
-            state.blue_offset  += cast(s32)((ifx cur_input.right.ended_down 1 else 0) * 4);
-            state.blue_offset  -= cast(s32)((ifx cur_input.left.ended_down 1 else 0) * 4);
-            state.green_offset -= cast(s32)((ifx cur_input.up.ended_down 1 else 0) * 4);
-            state.green_offset += cast(s32)((ifx cur_input.down.ended_down 1 else 0) * 4);
+            state.blue_offset  += cast(s32)((ifx cur_input.right.ended_down 1 else 0) * 15);
+            state.blue_offset  -= cast(s32)((ifx cur_input.left.ended_down 1 else 0) * 15);
+            state.green_offset -= cast(s32)((ifx cur_input.up.ended_down 1 else 0) * 15);
+            state.green_offset += cast(s32)((ifx cur_input.down.ended_down 1 else 0) * 15);
         }
     }
-
-    // TODO: Allow sample offsets here (eg, set sound further out in the future, or closer to immediately)
-    game_sound_output(sound_buffer, state.tone_hz);
 
     render_weird_gradient(back_buffer, state.blue_offset, state.green_offset);
 
