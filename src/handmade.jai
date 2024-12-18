@@ -24,9 +24,9 @@ Game_State :: struct {
 Game_Offscreen_Buffer :: struct {
     // NOTE: Pixels are always 32-bits wide, Memory Order BB GG RR XX
     memory     : *u8;
-    width      : int;
-    height     : int;
-    pitch      : int;
+    width      : s32;
+    height     : s32;
+    pitch      : s32;
 }
 
 Game_Sound_Buffer :: struct {

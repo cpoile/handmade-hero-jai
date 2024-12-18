@@ -19,34 +19,41 @@
 */
 
 
-SAMPLE_RATE      : s32 : 48000;
-BYTES_PER_SAMPLE :: size_of(s16) * 2;
-BUFFER_SIZE      :: SAMPLE_RATE * BYTES_PER_SAMPLE;  // 1 second
+SAMPLE_RATE               : s32 : 48000;
+BYTES_PER_SAMPLE          :: size_of(s16) * 2;
+SOUND_BUFFER_SIZE         :: SAMPLE_RATE * BYTES_PER_SAMPLE;  // 1 second
+FRAMES_OF_AUDIO_LATENCY   :: 3;
+// TODO: how do we reliably query this on Windows?
+MONITOR_REFRESH_HZ        :: 60;
+GAME_UPDATE_HZ            :: 30;
+TARGET_MS_PER_GAME_UPDATE :: 1000 / cast(float32)GAME_UPDATE_HZ;
+TARGET_SECONDS_PER_FRAME  :: 1 / cast(float32)GAME_UPDATE_HZ;
+LATENCY_SAMPLE_COUNT      :: FRAMES_OF_AUDIO_LATENCY * (SAMPLE_RATE / GAME_UPDATE_HZ);
 
 global_running           := true;
 global_back_buffer       : Offscreen_Buffer;
 dsound_lib               :: #system_library "dsound";
 dsound                   : *IDirectSound8;
-global_sec_sound_buffer  : *IDirectSoundBuffer8;
+global_sound_buffer      : *IDirectSoundBuffer8;
 global_perf_counter_freq : s64;
 
 Offscreen_Buffer :: struct {
-    BitmapInfo : BITMAPINFO;
-    memory     : *u8;
-    width      : int;
-    height     : int;
-    pitch      : int;
+    BitmapInfo      : BITMAPINFO;
+    memory          : *u8;
+    bytes_per_pixel :: 4;
+    width           : s32;  // this is what RECT is in
+    height          : s32;
+    pitch           : s32;
 }
 
 win32_window_dimensions :: struct {
-    width  : int;
-    height : int;
+    width  : s32;  // this is what RECT is in
+    height : s32;
 }
 
 win32_sound_output :: struct {
     running_sample_index  : s32 = 0;
     wave_period           : s32 = SAMPLE_RATE/261;
-    latency_sample_count  :: SAMPLE_RATE/15;
 }
 
 // Services that the platform layer provides the game
@@ -119,7 +126,7 @@ win32_fill_sound_buffer :: (
     // [left right] [left right] [left right]
     region1, region2: *void;
     size1, size2: s32;
-    if SUCCEEDED(global_sec_sound_buffer.Lock(global_sec_sound_buffer, byte_to_lock, bytes_to_write, *region1, *size1, *region2, *size2, 0)) {
+    if SUCCEEDED(global_sound_buffer.Lock(global_sound_buffer, byte_to_lock, bytes_to_write, *region1, *size1, *region2, *size2, 0)) {
         region1_sample_count : s32 = size1/BYTES_PER_SAMPLE;
         dest_samples := cast(*s16) region1;
         src_samples := source_buffer.samples;
@@ -147,7 +154,7 @@ win32_fill_sound_buffer :: (
             sound_output.running_sample_index += 1 ;
         }
 
-        _ = global_sec_sound_buffer.Unlock(global_sec_sound_buffer, region1, size1, region2, size2);
+        _ = global_sound_buffer.Unlock(global_sound_buffer, region1, size1, region2, size2);
     }
 }
 
@@ -204,10 +211,10 @@ win32_init_dsound :: (window: HWND) {
     sec_desc: DSBUFFERDESC;
     sec_desc.dwSize        = size_of(DSBUFFERDESC);
     sec_desc.dwFlags       = DSBCAPS_CTRLVOLUME | DSBCAPS_GETCURRENTPOSITION2;
-    sec_desc.dwBufferBytes = xx BUFFER_SIZE;
+    sec_desc.dwBufferBytes = xx SOUND_BUFFER_SIZE;
     sec_desc.lpwfxFormat   = *wfx.Format;
 
-    hr = dsound.vtable.CreateSoundBuffer(dsound, *sec_desc, *global_sec_sound_buffer, null);
+    hr = dsound.vtable.CreateSoundBuffer(dsound, *sec_desc, *global_sound_buffer, null);
     if FAILED(hr) {
         log_error("CreateSoundBuffer failed!\n");
         return;
@@ -229,8 +236,7 @@ win32_resize_DIB_section :: (back_buffer: *Offscreen_Buffer, width: s32, height:
     if back_buffer.memory  free(back_buffer.memory);
     back_buffer.width = width;
     back_buffer.height = height;
-    bytes_per_pixel := 4;
-    back_buffer.pitch = width * bytes_per_pixel;
+    back_buffer.pitch = width * back_buffer.bytes_per_pixel;
 
     // NOTE: When the biHeight field is negative, this is the clue to Windows to treat this bitmap as top down, not
     // bottom up, meaning that the first 3 bytes of the image are the color for the top left pixel in the bitmap,
@@ -242,7 +248,7 @@ win32_resize_DIB_section :: (back_buffer: *Offscreen_Buffer, width: s32, height:
     back_buffer.BitmapInfo.bmiHeader.biBitCount    = 32;
     back_buffer.BitmapInfo.bmiHeader.biCompression = BI_RGB;
 
-    bitmap_memory_size := ((back_buffer.width * back_buffer.height) * bytes_per_pixel);
+    bitmap_memory_size := ((back_buffer.width * back_buffer.height) * back_buffer.bytes_per_pixel);
     back_buffer.memory = alloc(bitmap_memory_size);
 }
 
@@ -250,6 +256,33 @@ win32_display_buffer_in_window :: (back_buffer: *Offscreen_Buffer, deviceContext
     // TODO: aspect ratio correction
     StretchDIBits(deviceContext, 0, 0, destWidth, destHeight, 0, 0, back_buffer.width, back_buffer.height,
                   back_buffer.memory, *back_buffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
+}
+
+win32_debug_draw_vertical :: (back_buffer: *Offscreen_Buffer, x: s32, top: s32, bottom: s32, color: u32) {
+    pixel := back_buffer.memory + (x * back_buffer.bytes_per_pixel + top * back_buffer.pitch);
+    for y: top .. bottom-1 {
+        <<cast(*u32)pixel = color;
+        pixel += back_buffer.pitch;
+    }
+}
+
+win32_debug_sync_display :: (back_buffer: *Offscreen_Buffer, last_play_cursor_count: u16, last_play_cursors: []s32,
+    sound_output: *win32_sound_output) {
+    // TODO: draw where we're writing out sound
+
+    pad_x  : s32 = 16;
+    pad_y  : s32 = 16;
+    top    : s32 = pad_y;
+    bottom : s32 = back_buffer.height - 16;
+
+    // remember Casey's talk on dimentional analysis: to change something mapped in sound buffer size into back_buffer size,
+    // mult by coefficient C. The sound buffer sized thing cancels out with the denominator, leaving back_buffer units.
+    C := cast(float32)(back_buffer.width - 2 * pad_x) / cast(float32)SOUND_BUFFER_SIZE;
+    for i: 0..last_play_cursors.count-1 {
+        last_play_cursor := last_play_cursors[i];
+        x := pad_x + cast(s32)(C * cast(float32)last_play_cursor);
+        win32_debug_draw_vertical(back_buffer, x, top, bottom, 0xFFFFFFFF);
+    }
 }
 
 win32_process_xinput_digital_button :: (
@@ -375,12 +408,7 @@ main :: () {
     // NOTE: Set the windows scheduler granularity, so our sleep can be better
     desired_scheduler_ms :: 1;
     sleep_is_granular := timeBeginPeriod(desired_scheduler_ms) == TIMERR_NOERROR;
-
-    monitor_refresh_hz :: 60;
-    // TODO: how do we reliably query this on Windows?
-    game_update_hz :: 30;
-    target_ms_per_game_update := 1000 / cast(float32)game_update_hz;
-    target_seconds_per_frame := cast(float32)1 / cast(float32)game_update_hz;
+    defer timeEndPeriod(desired_scheduler_ms);
 
     window := create_window(1280, 720, "Handmade Hero");
 
@@ -400,13 +428,13 @@ main :: () {
     sound_output : win32_sound_output = .{};
     win32_init_dsound(window);
     // no need to clear the secondary sound buffer in Jai, it's initialized to zero.
-    hr := global_sec_sound_buffer.Play(global_sec_sound_buffer, 0, 0, DSBPLAY_LOOPING);
+    hr := global_sound_buffer.Play(global_sound_buffer, 0, 0, DSBPLAY_LOOPING);
     if FAILED(hr) {
         log_error("Play failed!");
     }
 
     // TODO: pool with bitmap make
-    samples := alloc(BUFFER_SIZE);
+    samples := alloc(SOUND_BUFFER_SIZE);
     defer free(samples);
 
     // NOTE: Casey uses VirtualAlloc, so I'm going to do the same (for now). We're simulating our own allocator, so why not go raw.
@@ -438,6 +466,13 @@ main :: () {
     // Frame timings
     last_counter := win32_get_wall_clock();
     last_cycle_count := rdtsc();
+
+    // TODO: handle startup specially
+    last_play_cursor : s32 = 0;
+    sound_is_valid   := false;
+
+    debug_last_play_cursor_index : u16 = 0;
+    debug_last_play_cursor: [GAME_UPDATE_HZ / 2]s32;
 
     message: MSG;
     new_input := Game_Input.{};
@@ -511,19 +546,13 @@ main :: () {
         }
 
         // DirectSound output test
-        byte_to_lock, target_cursor, bytes_to_write, play_cursor, write_cursor: s32;
-
-        // TODO: Tighten up sound logic so that we know where we should be
-        // writing to and can anticipate the time spent in the game update.
-        hr := global_sec_sound_buffer.GetCurrentPosition(global_sec_sound_buffer, *play_cursor, *write_cursor);
-        if FAILED(hr) {
-            log_error("GetCurrentPosition failed!");
-        } else {
-            byte_to_lock = (sound_output.running_sample_index * BYTES_PER_SAMPLE) % BUFFER_SIZE;
-            target_cursor = (play_cursor + (sound_output.latency_sample_count * BYTES_PER_SAMPLE)) % BUFFER_SIZE;
+        byte_to_lock, target_cursor, bytes_to_write: s32;
+        if sound_is_valid {
+            byte_to_lock = (sound_output.running_sample_index * BYTES_PER_SAMPLE) % SOUND_BUFFER_SIZE;
+            target_cursor = (last_play_cursor + (LATENCY_SAMPLE_COUNT * BYTES_PER_SAMPLE)) % SOUND_BUFFER_SIZE;
 
             if byte_to_lock > target_cursor {
-                bytes_to_write = BUFFER_SIZE - byte_to_lock;  // we have this much ahead of us in the buffer to write to
+                bytes_to_write = SOUND_BUFFER_SIZE - byte_to_lock;  // we have this much ahead of us in the buffer to write to
                 bytes_to_write += target_cursor;                   // and add the first part of the buffer up to the play cursor
             } else {
                 bytes_to_write = target_cursor - byte_to_lock;    // we only have to fill from byte_to_lock up to the play_cursor
@@ -549,37 +578,60 @@ main :: () {
         work_sec_elapsed := win32_get_seconds_elapsed(last_counter, work_counter);
 
         sec_elapsed_for_frame := work_sec_elapsed;
-        if sec_elapsed_for_frame < target_seconds_per_frame {
+        if sec_elapsed_for_frame < TARGET_SECONDS_PER_FRAME {
             if sleep_is_granular {
-                sleep_ms := cast(s32)(1000 * (target_seconds_per_frame - sec_elapsed_for_frame)) - 1;  // -1 makes it work...
+                sleep_ms := cast(s32)(1000 * (TARGET_SECONDS_PER_FRAME - sec_elapsed_for_frame)) - 1;  // -1 makes it work...
                 if sleep_ms > 0  Sleep(sleep_ms);
             }
-            assert(sec_elapsed_for_frame < target_seconds_per_frame);
-            while sec_elapsed_for_frame < target_seconds_per_frame {
+            sec_elapsed_for_frame = win32_get_seconds_elapsed(last_counter, win32_get_wall_clock());
+            //assert(sec_elapsed_for_frame < TARGET_SECONDS_PER_FRAME);
+            while sec_elapsed_for_frame < TARGET_SECONDS_PER_FRAME {
                 sec_elapsed_for_frame = win32_get_seconds_elapsed(last_counter, win32_get_wall_clock());
             }
         } else {
-            log_error("sec_elapsed_for_frame > target_seconds_per_frame, missed a frame!");
+            log_error("missed a frame! sec_elapsed_for_frame > TARGET_SECONDS_PER_FRAME");
         }
+
+        end_counter := win32_get_wall_clock();
+        ms_per_frame := 1000 * win32_get_seconds_elapsed(last_counter, end_counter);
+        last_counter = end_counter;
 
         // FLIP THE FRAME:
         dims := get_window_dimensions(window);
+
+#if HANDMADE_INTERNAL {
+        win32_debug_sync_display(*global_back_buffer, debug_last_play_cursor_index, debug_last_play_cursor, *sound_output);
+}
+
         win32_display_buffer_in_window(*global_back_buffer, deviceContext, dims.width, dims.height);
 
-        end_counter := win32_get_wall_clock();
-        ms_per_frame := cast(float32) win32_get_seconds_elapsed(last_counter, end_counter);
-        fps := 0.0;
+        // We want the play cursor that we sampled back when we flipped the previous frame, and we want to add our frame latency into that.
+        play_cursor: s32;
+        write_cursor: s32;
+        if SUCCEEDED(global_sound_buffer.GetCurrentPosition(global_sound_buffer, *play_cursor, *write_cursor)) {
+            last_play_cursor = play_cursor;
+            sound_is_valid = true;
+        } else {
+            sound_is_valid = false;
+        }
+
+#if HANDMADE_INTERNAL {
+        // NOTE: this is debug code
+        debug_last_play_cursor[debug_last_play_cursor_index] = play_cursor;
+        debug_last_play_cursor_index += 1;
+        debug_last_play_cursor_index %= debug_last_play_cursor.count;
+}
 
         // Using rdtsc
         end_cycle_count := rdtsc();
         cycles_elapsed := end_cycle_count - last_cycle_count;
         mcpf := cycles_elapsed / (1000 * 1000);
+        fps := 0.0;
 
  #if HANDMADE_INTERNAL {
         OutputDebugStringA(to_c_string(tprint("ms_per_frame: %, FPS: %, cycles: % mc\n", ms_per_frame, fps, mcpf),, temp));
  }
 
-        last_counter = win32_get_wall_clock();
         last_cycle_count = end_cycle_count;
 
         new_input, old_input = old_input, new_input;
