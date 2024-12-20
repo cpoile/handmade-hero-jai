@@ -49,14 +49,61 @@ Offscreen_Buffer :: struct {
     pitch           : s32;
 }
 
-win32_window_dimensions :: struct {
+Win32_Window_Dimensions :: struct {
     width  : s32;  // this is what RECT is in
     height : s32;
 }
 
-win32_sound_output :: struct {
+Win32_Sound_Output :: struct {
     running_sample_index  : s32 = 0;
     wave_period           : s32 = SAMPLE_RATE/261;
+}
+
+Win32_Game_Code :: struct {
+    game_code_dll     : HMODULE;
+    update_and_render : Game_Update_And_Render;
+    get_sound_samples : Game_Get_Sound_Samples;
+    is_valid          : bool;
+}
+
+
+// Load the platform-independent game code
+win32_load_game_code :: () -> Win32_Game_Code {
+    success := CopyFileW(U.utf8_to_wide_new("handmade.dll"), U.utf8_to_wide_new("handmade_copy.dll"), 0);
+    if !success {
+        log_error("could not copy handmade.dll");
+        return .{};
+    }
+    game_code_dll := LoadLibraryW(U.utf8_to_wide_new("handmade_copy.dll",, temp));
+    if game_code_dll == null  return .{};
+
+    ret := Win32_Game_Code.{
+        game_code_dll = game_code_dll,
+        update_and_render = GetProcAddress(game_code_dll, to_c_string("game_update_and_render",, temp)),
+        get_sound_samples = GetProcAddress(game_code_dll, to_c_string("game_get_sound_samples",, temp)),
+    };
+    ret.is_valid = ret.update_and_render != null && ret.get_sound_samples != null;
+
+    if ret.is_valid {
+        log_error("successfully loaded game!");
+    } else {
+        log_error("failed to load game. :(");
+    }
+
+    return ret;
+}
+
+win32_unload_game_code :: (game_code: *Win32_Game_Code) -> bool {
+    success := FreeLibrary(game_code.game_code_dll);
+    if !success  {
+        log_error("failed to unload game code");
+        return false;
+    }
+
+    game_code.game_code_dll = null;
+    game_code.update_and_render = null;
+    game_code.get_sound_samples = null;
+    return true;
 }
 
 // Services that the platform layer provides the game
@@ -119,7 +166,7 @@ win32_sound_output :: struct {
 
 
 win32_fill_sound_buffer :: (
-    sound_output: *win32_sound_output,
+    sound_output: *Win32_Sound_Output,
     source_buffer: *Game_Sound_Buffer,
     byte_to_lock: s32,
     bytes_to_write: s32
@@ -226,7 +273,7 @@ win32_init_dsound :: (window: HWND) {
     log("Secondary buffer succeeded!\n");
 }
 
-get_window_dimensions :: (window: HWND) -> win32_window_dimensions {
+get_window_dimensions :: (window: HWND) -> Win32_Window_Dimensions {
     client_rect: RECT;
     GetClientRect(window, *client_rect);
     return .{
@@ -235,30 +282,30 @@ get_window_dimensions :: (window: HWND) -> win32_window_dimensions {
     };
 }
 
-win32_resize_DIB_section :: (back_buffer: *Offscreen_Buffer, width: s32, height: s32) {
-    if back_buffer.memory  free(back_buffer.memory);
-    back_buffer.width = width;
-    back_buffer.height = height;
-    back_buffer.pitch = width * back_buffer.bytes_per_pixel;
+win32_resize_DIB_section :: (buffer: *Offscreen_Buffer, width: s32, height: s32) {
+    if buffer.memory  free(buffer.memory);
+    buffer.width = width;
+    buffer.height = height;
+    buffer.pitch = width * buffer.bytes_per_pixel;
 
     // NOTE: When the biHeight field is negative, this is the clue to Windows to treat this bitmap as top down, not
     // bottom up, meaning that the first 3 bytes of the image are the color for the top left pixel in the bitmap,
     // not the bottom left
-    back_buffer.BitmapInfo.bmiHeader.biSize        = size_of(type_of(back_buffer.BitmapInfo.bmiHeader));
-    back_buffer.BitmapInfo.bmiHeader.biWidth       = width;
-    back_buffer.BitmapInfo.bmiHeader.biHeight      = -height;
-    back_buffer.BitmapInfo.bmiHeader.biPlanes      = 1;
-    back_buffer.BitmapInfo.bmiHeader.biBitCount    = 32;
-    back_buffer.BitmapInfo.bmiHeader.biCompression = BI_RGB;
+    buffer.BitmapInfo.bmiHeader.biSize        = size_of(type_of(buffer.BitmapInfo.bmiHeader));
+    buffer.BitmapInfo.bmiHeader.biWidth       = width;
+    buffer.BitmapInfo.bmiHeader.biHeight      = -height;
+    buffer.BitmapInfo.bmiHeader.biPlanes      = 1;
+    buffer.BitmapInfo.bmiHeader.biBitCount    = 32;
+    buffer.BitmapInfo.bmiHeader.biCompression = BI_RGB;
 
-    bitmap_memory_size := ((back_buffer.width * back_buffer.height) * back_buffer.bytes_per_pixel);
-    back_buffer.memory = alloc(bitmap_memory_size);
+    bitmap_memory_size := ((buffer.width * buffer.height) * buffer.bytes_per_pixel);
+    buffer.memory = alloc(bitmap_memory_size);
 }
 
-win32_display_buffer_in_window :: (back_buffer: *Offscreen_Buffer, deviceContext: HDC, destWidth: int, destHeight: int) {
+win32_display_buffer_in_window :: (buffer: *Offscreen_Buffer, deviceContext: HDC, destWidth: int, destHeight: int) {
     // TODO: aspect ratio correction
-    StretchDIBits(deviceContext, 0, 0, destWidth, destHeight, 0, 0, back_buffer.width, back_buffer.height,
-                  back_buffer.memory, *back_buffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
+    StretchDIBits(deviceContext, 0, 0, destWidth, destHeight, 0, 0, buffer.width, buffer.height,
+                  buffer.memory, *buffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
 }
 
 win32_debug_draw_vertical :: (back_buffer: *Offscreen_Buffer, x: s32, top: s32, bottom: s32, color: u32) {
@@ -270,7 +317,7 @@ win32_debug_draw_vertical :: (back_buffer: *Offscreen_Buffer, x: s32, top: s32, 
 }
 
 win32_debug_sync_display :: (back_buffer: *Offscreen_Buffer, last_play_cursor_count: u16, last_play_cursors: []s32,
-    sound_output: *win32_sound_output) {
+    sound_output: *Win32_Sound_Output) {
     // TODO: draw where we're writing out sound  --  doesn't match Casey's code in this proc
 
     pad_x  : s32 = 16;
@@ -337,8 +384,8 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 
             case WM_PAINT; {
                 paint: PAINTSTRUCT;
-                device_context: HDC            = BeginPaint(window, *paint);
-                dims: win32_window_dimensions = get_window_dimensions(window);
+                device_context: HDC           = BeginPaint(window, *paint);
+                dims: Win32_Window_Dimensions = get_window_dimensions(window);
 
                 win32_display_buffer_in_window(*global_back_buffer, device_context, dims.width, dims.height);
                 EndPaint(window, *paint);
@@ -429,7 +476,7 @@ main :: () {
         return;
     }
 
-    sound_output : win32_sound_output = .{};
+    sound_output : Win32_Sound_Output = .{};
     win32_init_dsound(window);
     // no need to clear the secondary sound buffer in Jai, it's initialized to zero.
     hr := global_sound_buffer.Play(global_sound_buffer, 0, 0, DSBPLAY_LOOPING);
@@ -465,7 +512,11 @@ main :: () {
     game_memory := Game_Memory.{
         permanent = .{permanent_len, permanent_mem},
         temporary = .{temporary_len, temporary_mem},
+        read_entire_file  = DEBUG_platform_read_entire_file,
+        free_file_memory  = DEBUG_platform_free_file_memory,
+        write_entire_file = DEBUG_platform_write_entire_file,
     };
+
 
     // Frame timings
     last_counter     := win32_get_wall_clock();
@@ -483,7 +534,26 @@ main :: () {
     new_input := Game_Input.{};
     old_input := Game_Input.{};
 
+    // Load the game:
+    game := win32_load_game_code();
+    if !game.is_valid {
+        log_error("could not load game code");
+        return;
+    }
+    load_counter := 0;
+
     while (global_running) {
+        load_counter += 1;
+        if load_counter > 120 {
+            success := win32_unload_game_code(*game);
+            if !success {
+                log_error("could not unload game code");
+                return;
+            }
+            game = win32_load_game_code();
+            load_counter = 0;
+        }
+
         // zero the keyboard at the start of each frame
         old_keyboard_controller := *old_input.controllers[0];
         new_keyboard_controller := *new_input.controllers[0];
@@ -556,7 +626,7 @@ main :: () {
             height = global_back_buffer.height,
             pitch  = global_back_buffer.pitch,
         };
-        game_update_and_render(*game_memory, *new_input, *buffer);
+        game.update_and_render(*game_memory, *new_input, *buffer);
 
 
         // DirectSound output test
@@ -626,7 +696,7 @@ main :: () {
                 samples_count      = bytes_to_write / BYTES_PER_SAMPLE,
                 samples            = samples,
             };
-            game_get_sound_samples(*game_memory, *game_sound_buffer);
+            game.get_sound_samples(*game_memory, *game_sound_buffer);
             win32_fill_sound_buffer(*sound_output, *game_sound_buffer, byte_to_lock, bytes_to_write);
 
             wrapped_around := play_cursor > write_cursor;
@@ -718,7 +788,8 @@ win32_debug :: (msg: string, args: ..Any) {
     OutputDebugStringA(to_c_string(tprint(msg, ..args),, temp));
 }
 
-#load "handmade.jai";
+#load "handmade_h.jai";
+
 #import "Basic";
 #import "Windows";
 #load "modules_additions/Windows.jai";
