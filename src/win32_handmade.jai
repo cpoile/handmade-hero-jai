@@ -31,6 +31,7 @@ TARGET_SECONDS_PER_FRAME  :: 1 / cast(float32)GAME_UPDATE_HZ;
 LATENCY_SAMPLE_COUNT      :: FRAMES_OF_AUDIO_LATENCY * (SAMPLE_RATE / GAME_UPDATE_HZ);
 // TODO: compute to see how low we can go
 SAFETY_BYTES              :: ((SAMPLE_RATE * BYTES_PER_SAMPLE) / GAME_UPDATE_HZ) / 3;
+GAME_LOAD_FAILURES_MAX    :: 30;  // avoid an infinite loop if we can't load the game dll
 
 global_running           := true;
 global_pause             := false;
@@ -61,42 +62,55 @@ Win32_Sound_Output :: struct {
 
 Win32_Game_Code :: struct {
     game_code_dll     : HMODULE;
+    last_write_time   : FILETIME;
     update_and_render : Game_Update_And_Render;
     get_sound_samples : Game_Get_Sound_Samples;
     is_valid          : bool;
 }
 
+win32_get_last_write_time :: (filename: string) -> FILETIME {
+    ret := FILETIME.{};
+    find_data: WIN32_FIND_DATAW;
+    find_handle := FindFirstFileW(U.utf8_to_wide_new(filename,, temp), *find_data);
+    if find_handle != INVALID_HANDLE_VALUE {
+        FindClose(find_handle);
+        ret = find_data.ftLastWriteTime;
+    }
+    return ret;
+}
 
 // Load the platform-independent game code
-win32_load_game_code :: () -> Win32_Game_Code {
-    success := CopyFileW(U.utf8_to_wide_new("handmade.dll"), U.utf8_to_wide_new("handmade_copy.dll"), 0);
+win32_load_game_code :: (base_path: string, filename: string) -> Win32_Game_Code {
+    dll_filename := join(base_path, filename,, temp);
+    temp_filename := join(base_path, "handmade_copy.dll",, temp);
+    ret := Win32_Game_Code.{};
+    ret.last_write_time = win32_get_last_write_time(filename);
+
+    source_dll_name := U.utf8_to_wide_new(dll_filename,, temp);
+    tmp_dll_name := U.utf8_to_wide_new(temp_filename,, temp);
+
+    success := CopyFileW(source_dll_name, tmp_dll_name, 0);
     if !success {
-        log_error("could not copy handmade.dll");
+        win32_debug("could not copy handmade.dll, last error: %\n", GetLastError());
         return .{};
     }
-    game_code_dll := LoadLibraryW(U.utf8_to_wide_new("handmade_copy.dll",, temp));
+    game_code_dll := LoadLibraryW(tmp_dll_name);
     if game_code_dll == null  return .{};
 
-    ret := Win32_Game_Code.{
-        game_code_dll = game_code_dll,
-        update_and_render = GetProcAddress(game_code_dll, to_c_string("game_update_and_render",, temp)),
-        get_sound_samples = GetProcAddress(game_code_dll, to_c_string("game_get_sound_samples",, temp)),
-    };
+    ret.game_code_dll = game_code_dll;
+    ret.update_and_render = GetProcAddress(game_code_dll, to_c_string("game_update_and_render",, temp));
+    ret.get_sound_samples = GetProcAddress(game_code_dll, to_c_string("game_get_sound_samples",, temp));
     ret.is_valid = ret.update_and_render != null && ret.get_sound_samples != null;
-
-    if ret.is_valid {
-        log_error("successfully loaded game!");
-    } else {
-        log_error("failed to load game. :(");
-    }
 
     return ret;
 }
 
 win32_unload_game_code :: (game_code: *Win32_Game_Code) -> bool {
+    if game_code.game_code_dll == null  return true;
+
     success := FreeLibrary(game_code.game_code_dll);
     if !success  {
-        log_error("failed to unload game code");
+        win32_debug("failed to unload game code, last error: %\n", GetLastError());
         return false;
     }
 
@@ -114,7 +128,7 @@ win32_unload_game_code :: (game_code: *Win32_Game_Code) -> bool {
     //  They are blocking and the write doesn't protect against lost data!
 
     DEBUG_platform_read_entire_file :: (filename: string) -> memory: []u8, ok: bool {
-        fh := CreateFileW(U.utf8_to_wide_new(filename), GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
+        fh := CreateFileW(U.utf8_to_wide_new(filename,, temp), GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
 
         if !fh return .{}, false;
 
@@ -152,7 +166,7 @@ win32_unload_game_code :: (game_code: *Win32_Game_Code) -> bool {
         memory.count = 0;
     }
     DEBUG_platform_write_entire_file :: (filename: string, memory: []u8) -> bool {
-        fh := CreateFileW(U.utf8_to_wide_new(filename), GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
+        fh := CreateFileW(U.utf8_to_wide_new(filename,, temp), GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
 
         if !fh {return false;}
 
@@ -428,7 +442,7 @@ win32_process_messages :: (keyboard_controller: *Game_Controller_Input) {
                 case #char "S";  win32_process_keyboard_message(*keyboard_controller.right, isDown);
                 case #char "Q";  win32_process_keyboard_message(*keyboard_controller.left_shoulder, isDown);
                 case #char "F";  win32_process_keyboard_message(*keyboard_controller.right_shoulder, isDown);
-                case VK_UP;      win32_process_keyboard_message(*keyboard_controller.up, isDown);
+                case VK_UP;      win32_process_keyboard_message(*keyboard_controller.up, isDown);
                 case VK_DOWN;    win32_process_keyboard_message(*keyboard_controller.down, isDown);
                 case VK_LEFT;    win32_process_keyboard_message(*keyboard_controller.left, isDown);
                 case VK_RIGHT;   win32_process_keyboard_message(*keyboard_controller.right, isDown);
@@ -454,6 +468,8 @@ win32_get_seconds_elapsed :: inline (start: s64, end: s64) -> float32 {
 }
 
 main :: () {
+    base_path := path_strip_filename(get_path_of_running_executable());
+
     QueryPerformanceFrequency(*global_perf_counter_freq);
 
     // NOTE: Set the windows scheduler granularity, so our sleep can be better
@@ -535,23 +551,35 @@ main :: () {
     old_input := Game_Input.{};
 
     // Load the game:
-    game := win32_load_game_code();
+    game_load_failures := 0;
+    game := win32_load_game_code(base_path, "handmade.dll");
     if !game.is_valid {
         log_error("could not load game code");
         return;
     }
-    load_counter := 0;
 
     while (global_running) {
-        load_counter += 1;
-        if load_counter > 120 {
+        // Reload the game dll if it has changed
+        new_dll_write_time := win32_get_last_write_time(join(base_path, "handmade.dll",, temp));
+        if CompareFileTime(*new_dll_write_time, *game.last_write_time) == 1 {
             success := win32_unload_game_code(*game);
             if !success {
-                log_error("could not unload game code");
-                return;
+                log_error("could not unload game code\n");
+                win32_debug("could not unload game code\n");
             }
-            game = win32_load_game_code();
-            load_counter = 0;
+            game = win32_load_game_code(base_path, "handmade.dll");
+            if !game.is_valid {
+                log_error("could not load game code\n");
+                win32_debug("could not load game code\n");
+                if game_load_failures > GAME_LOAD_FAILURES_MAX  {
+
+                    return;
+                }
+                game_load_failures += 1;
+                Sleep(1);
+                continue;
+            }
+            game_load_failures = 0;
         }
 
         // zero the keyboard at the start of each frame
@@ -799,4 +827,6 @@ win32_debug :: (msg: string, args: ..Any) {
 #import "Sound_Player";
 #import "Math";
 #import "Machine_X64";
+#import "String";
+#import "System";
 U :: #import "Windows_Utf8";

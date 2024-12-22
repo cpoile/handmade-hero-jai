@@ -1,3 +1,5 @@
+CompareFileTime :: (lpFileTime1: *FILETIME, lpFileTime2: *FILETIME) -> s32 #foreign kernel32;
+
 BeginPaint :: (hwnd: HWND, lpPaint: LPPAINTSTRUCT) -> HDC #foreign user32;
 
 EndPaint :: (hwnd: HWND, lpPaint: *PAINTSTRUCT) -> bool #foreign user32;
@@ -21,3 +23,4 @@ StretchDIBits :: (hdc: HDC, xDest: int, yDest: int, DestWidth: int, DestHeight: 
 
 user32   :: #system_library "user32";
 gdi      :: #system_library "Gdi32";
+kernel32 :: #system_library "kernel32";
