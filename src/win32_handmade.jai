@@ -81,7 +81,7 @@ win32_get_last_write_time :: (filename: string) -> FILETIME {
 
 // Load the platform-independent game code
 win32_load_game_code :: (base_path: string, filename: string) -> Win32_Game_Code {
-    dll_filename := join(base_path, filename,, temp);
+    dll_filename := join( base_path, filename,, temp);
     temp_filename := join(base_path, "handmade_copy.dll",, temp);
     ret := Win32_Game_Code.{};
     ret.last_write_time = win32_get_last_write_time(filename);
@@ -558,6 +558,7 @@ main :: () {
         return;
     }
 
+    // Main game Loop
     while (global_running) {
         // Reload the game dll if it has changed
         new_dll_write_time := win32_get_last_write_time(join(base_path, "handmade.dll",, temp));
@@ -816,7 +817,7 @@ win32_debug :: (msg: string, args: ..Any) {
     OutputDebugStringA(to_c_string(tprint(msg, ..args),, temp));
 }
 
-#load "handmade_h.jai";
+#load "handmade.jai";
 
 #import "Basic";
 #import "Windows";
