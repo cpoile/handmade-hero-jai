@@ -32,6 +32,7 @@ LATENCY_SAMPLE_COUNT      :: FRAMES_OF_AUDIO_LATENCY * (SAMPLE_RATE / GAME_UPDAT
 // TODO: compute to see how low we can go
 SAFETY_BYTES              :: ((SAMPLE_RATE * BYTES_PER_SAMPLE) / GAME_UPDATE_HZ) / 3;
 GAME_LOAD_FAILURES_MAX    :: 30;  // avoid an infinite loop if we can't load the game dll
+INPUT_RECORDING_FILENAME  :: "input_recording.hmi";
 
 global_base_path                : string;
 global_running           := true;
@@ -64,6 +65,8 @@ Win32_Sound_Output :: struct {
 Win32_Game_Code :: struct {
     game_code_dll     : HMODULE;
     last_write_time   : FILETIME;
+
+    // IMPORTANT      : either of these can be null, so check before using.
     update_and_render : Game_Update_And_Render;
     get_sound_samples : Game_Get_Sound_Samples;
     is_valid          : bool;
@@ -332,8 +335,11 @@ win32_resize_DIB_section :: (buffer: *Offscreen_Buffer, width: s32, height: s32)
 }
 
 win32_display_buffer_in_window :: (buffer: *Offscreen_Buffer, deviceContext: HDC, destWidth: int, destHeight: int) {
-    // TODO: aspect ratio correction
-    StretchDIBits(deviceContext, 0, 0, destWidth, destHeight, 0, 0, buffer.width, buffer.height,
+    // NOTE: during prototyping, we're going to always blit 1-to-1 pixels to remove stretching artifacts
+    // while we're learning to code the renderer.
+    StretchDIBits(deviceContext,
+                  0, 0, buffer.width, buffer.height,
+                  0, 0, buffer.width, buffer.height,
                   buffer.memory, *buffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
 }
 
@@ -347,7 +353,6 @@ win32_debug_draw_vertical :: (back_buffer: *Offscreen_Buffer, x: s32, top: s32, 
 
 win32_debug_sync_display :: (back_buffer: *Offscreen_Buffer, last_play_cursor_count: u16, last_play_cursors: []s32,
     sound_output: *Win32_Sound_Output) {
-    // TODO: draw where we're writing out sound  --  doesn't match Casey's code in this proc
 
     pad_x  : s32 = 16;
     pad_y  : s32 = 16;
@@ -387,12 +392,13 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 
         if message == {
         case WM_ACTIVATEAPP;
+#if false {
             if WParam {
                 SetLayeredWindowAttributes(window, RGB(0, 0, 0), 255, LWA_ALPHA);
             } else {
                 SetLayeredWindowAttributes(window, RGB(0, 0, 0), 64, LWA_ALPHA);
             }
-
+}
         case WM_CREATE;
              win32_debug("WM_CREATE\n");
 
@@ -502,8 +508,12 @@ win32_begin_recording_input :: (win32_state: *Win32_State, input_recording_index
     // TODO: Lazily write the giant memory block and use a memory copy instead?
 
     win32_state.input_recording_index = input_recording_index;
-    filename := U.utf8_to_wide_new(join(global_base_path, "input_recording.hmi",, temp),, temp);
+    filename := U.utf8_to_wide_new(join(global_base_path, INPUT_RECORDING_FILENAME,, temp),, temp);
     win32_state.recording_handle = CreateFileW(filename, GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
+    ignored: u32;
+
+    // Doesn't seem to work, sad.
+    // success := DeviceIoControl(win32_state.recording_handle, FSCTL_SET_SPARSE, null, 0, null, 0, *ignored, null);
 
     assert(win32_state.game_memory_block.count < 0xFFFFFFFF);  // can't save more than this in one write, will have to loop.
     bytes_written : DWORD;
@@ -518,7 +528,7 @@ win32_end_recording_input :: (win32_state: *Win32_State) {
 
 win32_begin_input_playback :: (win32_state: *Win32_State, input_playing_index: int) {
     win32_state.input_playing_index = input_playing_index;
-    filename := U.utf8_to_wide_new(join(global_base_path, "input_recording.hmi",, temp),, temp);
+    filename := U.utf8_to_wide_new(join(global_base_path, INPUT_RECORDING_FILENAME,, temp),, temp);
     win32_state.playback_handle = CreateFileW(filename, GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
 
     assert(win32_state.game_memory_block.count < 0xFFFFFFFF);  // can't save more than this in one write, will have to loop.
@@ -602,7 +612,8 @@ create_window :: (width: int, height: int, name: string) -> HWND {
     //buff : [100]u16;
     //MultiByteToWideChar(CP_ACP, 0, "My, Handmade Hero", -1, cast(*u16) *buff, 200);
 
-    return CreateWindowExW(WS_EX_TOPMOST | WS_EX_LAYERED,
+    // uncomment when we want to do the stay on-top and transparent window (also un-#if near WM_ACTIVATEAPP)
+    return CreateWindowExW(0, //WS_EX_TOPMOST | WS_EX_LAYERED,
                            window_class.lpszClassName,
                            U.utf8_to_wide_new("Oh my, Handmade Hero",, temp),
                            style,
@@ -661,7 +672,7 @@ main :: () {
         base_address : *void = null;
     }
     permanent_len := MEGABYTES(64);
-    temporary_len := MEGABYTES(128);
+    temporary_len := GIGABYTES(1);
 
     // TODO: Handle various memory footprints.
     total_size := permanent_len + temporary_len;
@@ -754,6 +765,8 @@ main :: () {
             controller_state: XINPUT_STATE;
             if XInputGetState(xx controller_index, *controller_state) == 0 /*ERROR_SUCCESS*/ {
                 pad := *controller_state.Gamepad;
+                new_controller.analog = old_controller.analog;
+
                 // up := pad.wButtons & XINPUT_GAMEPAD_DPAD_UP;
                 // down := pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
                 // left := pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
@@ -766,15 +779,27 @@ main :: () {
                 denom = xx ifx pad.sThumbLY < -dzone then 32768 else 32767;
                 y := cast(float32)pad.sThumbLY / denom;
 
-                new_controller.analog = true;
+                if x != 0 || y != 0  new_controller.analog = true;
+
                 new_controller.stick_avg_x = x;
                 new_controller.stick_avg_y = y;
 
-                if pad.wButtons & XINPUT_GAMEPAD_DPAD_UP     new_controller.stick_avg_y = 1;
-                if pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN   new_controller.stick_avg_y = -1;
-                if pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT   new_controller.stick_avg_x = -1;
-                if pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT  new_controller.stick_avg_x = 1;
-
+                if pad.wButtons & XINPUT_GAMEPAD_DPAD_UP     {
+                    new_controller.stick_avg_y = 1;
+                    new_controller.analog = false;
+                }
+                if pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN {
+                    new_controller.stick_avg_y = -1;
+                    new_controller.analog = false;
+                }
+                if pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT {
+                    new_controller.stick_avg_x = -1;
+                    new_controller.analog = false;
+                }
+                if pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT {
+                    new_controller.stick_avg_x = 1;
+                    new_controller.analog = false;
+                }
                 // NOTE: not doing the stick->move_up/down/etc mapping that Casey did. Maybe I'll do it if we need it later.
 
                 win32_process_xinput_digital_button(old_controller.a, *new_controller.a, pad.wButtons, XINPUT_GAMEPAD_A);
@@ -812,7 +837,7 @@ main :: () {
         if game_state.input_recording_index  win32_record_input(*game_state, *new_input);
         if game_state.input_playing_index    win32_playback_input(*game_state, *new_input);
 
-        game.update_and_render(*game_memory, *new_input, *buffer);
+        if game.update_and_render  game.update_and_render(*game_memory, *new_input, *buffer);
 
 
         // DirectSound output test
@@ -847,11 +872,12 @@ main :: () {
             }
 
             expected_sound_bytes_per_frame := (SAMPLE_RATE * BYTES_PER_SAMPLE) / GAME_UPDATE_HZ;
-            expected_frame_boundary_byte := play_cursor + expected_sound_bytes_per_frame;
 
             // used for Casey's debugging lines (which we aren't drawing):
             seconds_left_until_flip := TARGET_SECONDS_PER_FRAME - from_begin_to_audio_seconds;
-            expected_bytes_until_flip := (seconds_left_until_flip / TARGET_SECONDS_PER_FRAME) * cast(float32) expected_sound_bytes_per_frame;
+            expected_bytes_until_flip := cast(s32)((seconds_left_until_flip / TARGET_SECONDS_PER_FRAME) * cast(float32) expected_sound_bytes_per_frame);
+
+            expected_frame_boundary_byte := play_cursor + expected_bytes_until_flip;
 
             safe_write_cursor := write_cursor;
             if safe_write_cursor < play_cursor {
@@ -882,7 +908,7 @@ main :: () {
                 samples_count      = bytes_to_write / BYTES_PER_SAMPLE,
                 samples            = samples,
             };
-            game.get_sound_samples(*game_memory, *game_sound_buffer);
+            if game.get_sound_samples  game.get_sound_samples(*game_memory, *game_sound_buffer);
             win32_fill_sound_buffer(*sound_output, *game_sound_buffer, byte_to_lock, bytes_to_write);
 
             wrapped_around := play_cursor > write_cursor;

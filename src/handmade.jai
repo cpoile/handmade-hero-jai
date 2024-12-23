@@ -32,7 +32,7 @@ render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer, xOffset: int, yOf
             //     in register: xx RR GG BB  (bc it's little endian)
             bb := cast,trunc(u8)(x + xOffset+100);
             gg := cast,trunc(u8)(y + yOffset);
-            <<pixel = ((cast(u32) gg) << 16 | bb);
+            <<pixel = ((cast(u32) gg) << 8 | bb);
             pixel += 1;
         }
 
