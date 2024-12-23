@@ -68,10 +68,21 @@ Win32_Game_Code :: struct {
     is_valid          : bool;
 }
 
-win32_get_last_write_time :: (filename: string) -> FILETIME {
+Win32_State :: struct {
+    game_memory_block     : []u8;
+    recording_handle      : HANDLE;
+    input_recording_index : int;
+    playback_handle       : HANDLE;
+    input_playing_index   : int;
+}
+
+win32_get_last_write_time :: (base_path: string, filename: string) -> FILETIME {
     ret := FILETIME.{};
     find_data: WIN32_FIND_DATAW;
-    find_handle := FindFirstFileW(U.utf8_to_wide_new(filename,, temp), *find_data);
+    full_filename := join( base_path, filename,, temp);
+    full_wide_name := U.utf8_to_wide_new(full_filename,, temp);
+
+    find_handle := FindFirstFileW(full_wide_name, *find_data);
     if find_handle != INVALID_HANDLE_VALUE {
         FindClose(find_handle);
         ret = find_data.ftLastWriteTime;
@@ -81,20 +92,32 @@ win32_get_last_write_time :: (filename: string) -> FILETIME {
 
 // Load the platform-independent game code
 win32_load_game_code :: (base_path: string, filename: string) -> Win32_Game_Code {
+    filename_no_ext := path_strip_extension(filename);
+
     dll_filename := join( base_path, filename,, temp);
-    temp_filename := join(base_path, "handmade_copy.dll",, temp);
+    pdb_filename := join( base_path, filename_no_ext, ".pdb",, temp);
+    temp_dll_filename := join(base_path, "handmade_copy.dll",, temp);
+    temp_pdb_filename := join(base_path, "handmade_copy.pdb",, temp);
     ret := Win32_Game_Code.{};
-    ret.last_write_time = win32_get_last_write_time(filename);
+    ret.last_write_time = win32_get_last_write_time(base_path, filename);
 
-    source_dll_name := U.utf8_to_wide_new(dll_filename,, temp);
-    tmp_dll_name := U.utf8_to_wide_new(temp_filename,, temp);
+    source_dll_wide_name := U.utf8_to_wide_new(dll_filename,, temp);
+    tmp_dll_wide_name := U.utf8_to_wide_new(temp_dll_filename,, temp);
 
-    success := CopyFileW(source_dll_name, tmp_dll_name, 0);
+    success := CopyFileW(source_dll_wide_name, tmp_dll_wide_name, 0);
     if !success {
         win32_debug("could not copy handmade.dll, last error: %\n", GetLastError());
         return .{};
     }
-    game_code_dll := LoadLibraryW(tmp_dll_name);
+
+    source_pdb_wide_name := U.utf8_to_wide_new(pdb_filename,, temp);
+    tmp_pdb_wide_name := U.utf8_to_wide_new(temp_pdb_filename,, temp);
+    success = CopyFileW(source_pdb_wide_name, tmp_pdb_wide_name, 0);
+    if !success {
+        win32_debug("could not copy handmade.pdb, last error: %\n", GetLastError());
+        return .{};
+    }
+    game_code_dll := LoadLibraryW(tmp_dll_wide_name);
     if game_code_dll == null  return .{};
 
     ret.game_code_dll = game_code_dll;
@@ -359,8 +382,8 @@ win32_process_xinput_digital_button :: (
     new_state.half_transition_count += xx ifx old_state.ended_down != new_state.ended_down  1;
 }
 
-#add_context _windows_windowproc :: win32_main_window_callback;
-#add_context _windows_windowproc_allocator: Allocator;
+// #add_context _windows_windowproc :: win32_main_window_callback;
+// #add_context _windows_windowproc_allocator: Allocator;
 
 win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LParam: LPARAM) -> LRESULT #c_call {
     new_context: Context;
@@ -371,43 +394,47 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
         alt_is_down := false;
 
         if message == {
-            case WM_CREATE;
-                win32_debug("WM_CREATE\n");
-
-            case WM_SIZE;
-                win32_debug("WM_SIZE\n");
-
-            case WM_DESTROY;
-                global_running = false;
-                win32_debug("WM_DESTROY\n");
-
-            case WM_SYSKEYDOWN;  #through;
-            case WM_SYSKEYUP;    #through;
-            case WM_KEYDOWN;     #through;
-            case WM_KEYUP; {
-                assert(false, "Keyboard input came in through a non-dispatch message!");
+        case WM_ACTIVATEAPP;
+            if WParam {
+                SetLayeredWindowAttributes(window, RGB(0, 0, 0), 255, LWA_ALPHA);
+            } else {
+                SetLayeredWindowAttributes(window, RGB(0, 0, 0), 64, LWA_ALPHA);
             }
 
-            case WM_CLOSE; {
-                global_running = false;
-                win32_debug("WM_CLOSE\n");
-            }
+        case WM_CREATE;
+             win32_debug("WM_CREATE\n");
 
-            case WM_ACTIVATEAPP;
-                win32_debug("WM_ACTIVATEAPP\n");
+        case WM_SIZE;
+            win32_debug("WM_SIZE\n");
 
-            case WM_PAINT; {
-                paint: PAINTSTRUCT;
-                device_context: HDC           = BeginPaint(window, *paint);
-                dims: Win32_Window_Dimensions = get_window_dimensions(window);
+        case WM_DESTROY;
+            global_running = false;
+            win32_debug("WM_DESTROY\n");
 
-                win32_display_buffer_in_window(*global_back_buffer, device_context, dims.width, dims.height);
-                EndPaint(window, *paint);
-            }
+        case WM_SYSKEYDOWN;  #through;
+        case WM_SYSKEYUP;    #through;
+        case WM_KEYDOWN;     #through;
+        case WM_KEYUP; {
+            assert(false, "Keyboard input came in through a non-dispatch message!");
+        }
 
-            case;
-                //            win32_debug("default\n")
-                result = DefWindowProcA(window, message, WParam, LParam);
+        case WM_CLOSE; {
+            global_running = false;
+            win32_debug("WM_CLOSE\n");
+        }
+
+        case WM_PAINT; {
+            paint: PAINTSTRUCT;
+            device_context: HDC           = BeginPaint(window, *paint);
+            dims: Win32_Window_Dimensions = get_window_dimensions(window);
+
+            win32_display_buffer_in_window(*global_back_buffer, device_context, dims.width, dims.height);
+            EndPaint(window, *paint);
+        }
+
+        case;
+            //            win32_debug("default\n")
+            result = DefWindowProcA(window, message, WParam, LParam);
         }
 
         return (result);
@@ -420,7 +447,7 @@ win32_process_keyboard_message :: (new_state: *Game_Button_State, isDown: bool) 
     new_state.half_transition_count += 1;
 }
 
-win32_process_messages :: (keyboard_controller: *Game_Controller_Input) {
+win32_process_messages :: (win32_state: *Win32_State, keyboard_controller: *Game_Controller_Input) {
     message: MSG;
     while PeekMessageA(*message, null, 0, 0, PM_REMOVE) {
         if message.message == {
@@ -442,12 +469,20 @@ win32_process_messages :: (keyboard_controller: *Game_Controller_Input) {
                 case #char "S";  win32_process_keyboard_message(*keyboard_controller.right, isDown);
                 case #char "Q";  win32_process_keyboard_message(*keyboard_controller.left_shoulder, isDown);
                 case #char "F";  win32_process_keyboard_message(*keyboard_controller.right_shoulder, isDown);
-                case VK_UP;      win32_process_keyboard_message(*keyboard_controller.up, isDown);
+                case VK_UP;      win32_process_keyboard_message(*keyboard_controller.up, isDown);
                 case VK_DOWN;    win32_process_keyboard_message(*keyboard_controller.down, isDown);
                 case VK_LEFT;    win32_process_keyboard_message(*keyboard_controller.left, isDown);
                 case VK_RIGHT;   win32_process_keyboard_message(*keyboard_controller.right, isDown);
                 case VK_ESCAPE;  global_running = false;
                 case #char "P";  if isDown  global_pause = !global_pause;
+                case #char "L";  if isDown {
+                    if win32_state.input_recording_index == 0 {
+                        win32_begin_recording_input(win32_state, 1);
+                    } else {
+                        win32_end_recording_input(win32_state);
+                        win32_begin_input_playback(win32_state, 1);
+                    }
+                }
                 }
             }
         case;
@@ -467,6 +502,57 @@ win32_get_seconds_elapsed :: inline (start: s64, end: s64) -> float32 {
     return cast(float32)(end - start) / cast(float32)global_perf_counter_freq;
 }
 
+win32_begin_recording_input :: (win32_state: *Win32_State, input_recording_index: int) {
+    win32_state.input_recording_index = input_recording_index;
+    filename := U.utf8_to_wide_new("input_recording.hmi",, temp);
+    win32_state.recording_handle = CreateFileW(filename, GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
+
+    assert(win32_state.game_memory_block.count < 0xFFFFFFFF);  // can't save more than this in one write, will have to loop.
+    bytes_written : DWORD;
+    WriteFile(win32_state.recording_handle, win32_state.game_memory_block.data, cast(u32)win32_state.game_memory_block.count,
+              *bytes_written, null);
+}
+
+win32_end_recording_input :: (win32_state: *Win32_State) {
+    CloseHandle(win32_state.recording_handle);
+    win32_state.input_recording_index = 0;
+}
+
+win32_begin_input_playback :: (win32_state: *Win32_State, input_playing_index: int) {
+    win32_state.input_playing_index = input_playing_index;
+    filename := U.utf8_to_wide_new("input_recording.hmi",, temp);
+    win32_state.playback_handle = CreateFileW(filename, GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
+
+    assert(win32_state.game_memory_block.count < 0xFFFFFFFF);  // can't save more than this in one write, will have to loop.
+    bytes_read : DWORD;
+    ReadFile(win32_state.playback_handle, win32_state.game_memory_block.data, cast(u32)win32_state.game_memory_block.count,
+              *bytes_read, null);
+}
+
+win32_end_input_playback :: (win32_state: *Win32_State) {
+    CloseHandle(win32_state.playback_handle);
+    win32_state.input_playing_index = 0;
+}
+
+win32_record_input :: (win32_state: Win32_State, new_input: Game_Input) {
+    bytes_written : DWORD;
+    WriteFile(win32_state.recording_handle, *new_input, size_of(Game_Input), *bytes_written, null);
+}
+
+win32_playback_input :: (win32_state: *Win32_State, new_input: *Game_Input) {
+    bytes_read : DWORD;
+    if !ReadFile(win32_state.playback_handle, new_input, size_of(Game_Input), *bytes_read, null) {
+        return;
+    }
+    if bytes_read == 0 {
+        // finished reading file
+        playing_index := win32_state.input_playing_index;
+        win32_end_input_playback(win32_state);
+        win32_begin_input_playback(win32_state, playing_index);
+    }
+}
+
+
 main :: () {
     base_path := path_strip_filename(get_path_of_running_executable());
 
@@ -477,14 +563,71 @@ main :: () {
     sleep_is_granular := timeBeginPeriod(desired_scheduler_ms) == TIMERR_NOERROR;
     defer timeEndPeriod(desired_scheduler_ms);
 
-    window := create_window(1280, 720, "Handmade Hero");
+    width  : s32 = 1280;
+    height : s32 = 720;
+    window_x : int = 200;
+    window_y : int = 100;
 
-    win32_resize_DIB_section(*global_back_buffer, 1280, 720);
+    win32_resize_DIB_section(*global_back_buffer, width, height);
     defer free(global_back_buffer.memory);
 
-    // NOTE: since we specified CS_OWNDC (in Window_Creation/windows.jai), we can just get one device context and use it
-    // forever because we are not sharing it with anyone.
-    deviceContext := GetDC(window);
+    hInstance := GetModuleHandleW(null);
+
+    // Load the first icon resource (RESOURCE_ID_FIRST_ICON).
+    icon := LoadIconW(hInstance, MAKEINTRESOURCEW(2));
+    err := GetLastError();
+
+    // If the icon is null, then use the first one found in the exe.
+    if icon == null {
+        exe_path : [MAX_PATH]u16;
+        GetModuleFileNameW(null, exe_path.data, MAX_PATH);
+
+        icon = ExtractIconW(hInstance, exe_path.data, 0); // 0 means first icon.
+    }
+
+    window_class: WNDCLASSEXW  = .{};
+    window_class.cbSize        = size_of(WNDCLASSEXW);
+    window_class.style         = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
+    window_class.lpfnWndProc   = xx win32_main_window_callback;
+    window_class.cbClsExtra    = 0;
+    window_class.cbWndExtra    = 0;
+    window_class.hInstance     = hInstance;
+    window_class.hIcon         = icon;
+    window_class.hCursor       = LoadCursorW(null, IDC_ARROW);
+    window_class.hbrBackground = cast(HBRUSH) GetStockObject(WHITE_BRUSH);
+    window_class.lpszMenuName  = null;
+    window_class.lpszClassName = U.utf8_to_wide_new("HandmadeHeroWindowClass",, temp);
+
+    if RegisterClassExW(*window_class) == 0 {
+        win32_error("RegisterClassExW returned 0.\n");
+        return;
+    }
+
+    rect : RECT;
+    rect.right  = xx width;
+    rect.bottom = xx height;
+    style : u32 = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+
+    AdjustWindowRect(*rect, style, .FALSE); // @Robustness: Could this reasonably fail these days?
+
+    client_width  := rect.right-rect.left;
+    client_height := rect.bottom-rect.top;
+
+    namew, suc, len := U.utf8_to_wide_new("Oh my, Handmade Hero",, temp);
+    name, suc2 := U.wide_to_utf8_new(namew, len,, temp);
+    print("success: %, success2 %, name : %\n", suc, suc2, name);
+
+    window := CreateWindowExW(WS_EX_TOPMOST | WS_EX_LAYERED,
+                            window_class.lpszClassName,
+                            U.utf8_to_wide_new("Oh my, Handmade Hero",, temp),
+                            style,
+                            xx window_x, xx window_y,
+                            xx client_width, xx client_height,
+                            null,
+                            null,
+                            hInstance,
+                            null);
+
 
     success := init_xinput();
     if !success {
@@ -513,7 +656,7 @@ main :: () {
         base_address : *void = null;
     }
     permanent_len := MEGABYTES(64);
-    temporary_len := GIGABYTES(4);
+    temporary_len := GIGABYTES(1);
 
     // TODO: Handle various memory footprints.
     total_size := permanent_len + temporary_len;
@@ -531,6 +674,11 @@ main :: () {
         read_entire_file  = DEBUG_platform_read_entire_file,
         free_file_memory  = DEBUG_platform_free_file_memory,
         write_entire_file = DEBUG_platform_write_entire_file,
+    };
+
+    // record the entire memory block:
+    game_state := Win32_State.{
+        game_memory_block = .{total_size, permanent_mem},
     };
 
 
@@ -561,7 +709,7 @@ main :: () {
     // Main game Loop
     while (global_running) {
         // Reload the game dll if it has changed
-        new_dll_write_time := win32_get_last_write_time(join(base_path, "handmade.dll",, temp));
+        new_dll_write_time := win32_get_last_write_time(base_path, "handmade.dll");
         if CompareFileTime(*new_dll_write_time, *game.last_write_time) == 1 {
             success := win32_unload_game_code(*game);
             if !success {
@@ -573,7 +721,6 @@ main :: () {
                 log_error("could not load game code\n");
                 win32_debug("could not load game code\n");
                 if game_load_failures > GAME_LOAD_FAILURES_MAX  {
-
                     return;
                 }
                 game_load_failures += 1;
@@ -591,7 +738,7 @@ main :: () {
             new_keyboard_controller.buttons[i].ended_down = old_keyboard_controller.buttons[i].ended_down;
         }
 
-        win32_process_messages(new_keyboard_controller);
+        win32_process_messages(*game_state, new_keyboard_controller);
 
         // TODO: Need to not poll disconnected controllers to avoid xinput frame rate hit on older libraries
         // TODO: Should we poll this more frequently?
@@ -650,11 +797,16 @@ main :: () {
         }
 
         buffer := Game_Offscreen_Buffer.{
-            memory = global_back_buffer.memory,
-            width  = global_back_buffer.width,
-            height = global_back_buffer.height,
-            pitch  = global_back_buffer.pitch,
+            memory          = global_back_buffer.memory,
+            width           = global_back_buffer.width,
+            height          = global_back_buffer.height,
+            pitch           = global_back_buffer.pitch,
+            bytes_per_pixel = 4,
         };
+
+        if game_state.input_recording_index  win32_record_input(*game_state, *new_input);
+        if game_state.input_playing_index    win32_playback_input(*game_state, *new_input);
+
         game.update_and_render(*game_memory, *new_input, *buffer);
 
 
@@ -775,8 +927,11 @@ main :: () {
         win32_debug_sync_display(*global_back_buffer, debug_last_play_cursor_index, debug_last_play_cursor, *sound_output);
 }
 
+        // TODO: need to make this a real pause, ofc.
         if !global_pause {
-            win32_display_buffer_in_window(*global_back_buffer, deviceContext, dims.width, dims.height);
+            device_context := GetDC(window);
+            win32_display_buffer_in_window(*global_back_buffer, device_context, dims.width, dims.height);
+            ReleaseDC(window, device_context);
         }
         flip_wall_clock = win32_get_wall_clock();
 
@@ -817,7 +972,12 @@ win32_debug :: (msg: string, args: ..Any) {
     OutputDebugStringA(to_c_string(tprint(msg, ..args),, temp));
 }
 
-#load "handmade.jai";
+win32_error :: (msg: string, args: ..Any) {
+    OutputDebugStringA(to_c_string(tprint(msg, ..args),, temp));
+    log_error(msg, args);
+}
+
+#load "handmade_h.jai";
 
 #import "Basic";
 #import "Windows";

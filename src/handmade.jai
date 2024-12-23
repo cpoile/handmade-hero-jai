@@ -1,101 +1,9 @@
 // Platform-independent game code
 
-MAX_INPUTS :: 5;  // 4 controllers + keyboard
-
-// Useful macros
-KILOBYTES :: (v: $T) -> T #expand { return v * 1024; }
-MEGABYTES :: (v: $T) -> T #expand { return KILOBYTES(v) * 1024; }
-GIGABYTES :: (v: $T) -> T #expand { return MEGABYTES(v) * 1024; }
-TERABYTES :: (v: $T) -> T #expand { return GIGABYTES(v) * 1024; }
-
-Game_State :: struct {
-    initialized  : bool;
-    blue_offset  : s32;
-    green_offset : s32;
-    tone_hz      : s32;
-    t_sine       : float32;
-}
-
-Game_Memory :: struct {
-    permanent : []u8;
-    temporary : []u8;
-
-    // Procs from the platform layer
-    read_entire_file  : DEBUG_Platform_Read_Entire_File;
-    free_file_memory  : DEBUG_Platform_Free_File_Memory;
-    write_entire_file : DEBUG_Platform_Write_Entire_File;
-}
-
-// TODO: In the future, rendering _specifically_ will become a three-tiered abstraction!!
-Game_Offscreen_Buffer :: struct {
-    // NOTE: Pixels are always 32-bits wide, Memory Order BB GG RR XX
-    memory     : *u8;
-    width      : s32;
-    height     : s32;
-    pitch      : s32;
-}
-
-Game_Sound_Buffer :: struct {
-    samples_per_second : s32;
-    samples_count      : s32;
-    samples            : *s16;
-}
-
-Game_Button_State :: struct {
-    half_transition_count : u8;
-    ended_down            : bool;
-}
-
-Game_Controller_Input :: struct {
-    is_connected   : bool;
-    analog         : bool;
-    stick_avg_x    : float32;
-    stick_avg_y    : float32;
-    union {
-        buttons: [12]Game_Button_State;
-        struct {
-            up             : Game_Button_State;
-            down           : Game_Button_State;
-            left           : Game_Button_State;
-            right          : Game_Button_State;
-            a              : Game_Button_State;
-            b              : Game_Button_State;
-            x              : Game_Button_State;
-            y              : Game_Button_State;
-            left_shoulder  : Game_Button_State;
-            right_shoulder : Game_Button_State;
-            back           : Game_Button_State;
-            start          : Game_Button_State;
-            // NOTE: always add new buttons above the terminator
-            terminator     : Game_Button_State;
-        }
-    }
-}
-
-Game_Input :: struct {
-    controllers: [MAX_INPUTS]Game_Controller_Input;
-}
-
-Game_Update_And_Render :: #type (
-    game_memory          : *Game_Memory,
-    input                : *Game_Input,
-    back_buffer          : *Game_Offscreen_Buffer
-) -> bool;
-Game_Get_Sound_Samples :: #type (game_memory: *Game_Memory, sound_buffer: *Game_Sound_Buffer);
-
-
-// Below is implementation, the platform only needed the above (kind of like a header file).
-#scope_file
-
-// Functions the platform layer provides
-//
-DEBUG_Platform_Read_Entire_File  :: #type (filename: string) -> memory: []u8, ok: bool;
-DEBUG_Platform_Free_File_Memory  :: #type (memory: *[]u8);
-DEBUG_Platform_Write_Entire_File :: #type (filename: string, memory: []u8) -> bool;
-
 
 game_sound_output :: (sound_buffer: *Game_Sound_Buffer, tone_hz: s32, t_sine: *float32) {
-    tone_volume := 3000;
+    //tone_volume := 3000;
+    tone_volume := 0;
     wave_period := sound_buffer.samples_per_second / tone_hz;
 
     sample_out := sound_buffer.samples;
@@ -114,7 +22,7 @@ game_sound_output :: (sound_buffer: *Game_Sound_Buffer, tone_hz: s32, t_sine: *f
     }
 }
 
-render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer,  xOffset: int, yOffset: int) {
+render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer, xOffset: int, yOffset: int) {
     row := back_buffer.memory;
     for y: 0..back_buffer.height-1 {
         pixel := cast(*u32) row;
@@ -124,11 +32,26 @@ render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer,  xOffset: int, yO
             //     in register: xx RR GG BB  (bc it's little endian)
             bb := cast,trunc(u8)(x + xOffset+100);
             gg := cast,trunc(u8)(y + yOffset);
-            <<pixel = ((cast(u32) gg) << 8 | bb);
+            <<pixel = ((cast(u32) gg) << 16 | bb);
             pixel += 1;
         }
 
         row += back_buffer.pitch;
+    }
+}
+
+render_player :: (buffer: *Game_Offscreen_Buffer, player_x: s32, player_y: s32) {
+    endOfBuffer := buffer.memory + buffer.pitch * buffer.height;
+    top    := player_y;
+    bottom := player_y+10;
+
+    for x: player_x..player_x+10 {
+        pixel := buffer.memory + x * buffer.bytes_per_pixel + top * buffer.pitch;
+        for y: top..bottom {
+            if pixel <= buffer.memory || (pixel+4) >= endOfBuffer  continue;
+            <<(cast(*u32)pixel) = 0xFFFFFFFF;
+            pixel += buffer.pitch;
+        }
     }
 }
 
@@ -161,6 +84,8 @@ game_update_and_render :: (
     state := cast(*Game_State)game_memory.permanent.data;
     if !state.initialized {
         state.tone_hz = 256;
+        state.player_x = 100;
+        state.player_y = 100;
         state.initialized = true;
 
         bitmap_memory, success := game_memory.read_entire_file(#file);
@@ -186,12 +111,21 @@ game_update_and_render :: (
             state.green_offset -= cast(s32)((ifx cur_input.up.ended_down 1 else 0) * 15);
             state.green_offset += cast(s32)((ifx cur_input.down.ended_down 1 else 0) * 15);
         }
+
+        state.player_x += cast(s32)(15*cur_input.stick_avg_x);
+        state.player_y -= cast(s32)(15*cur_input.stick_avg_y);
+        if cur_input.a.ended_down {
+            state.player_y -= 10;
+        }
     }
 
     render_weird_gradient(back_buffer, state.blue_offset, state.green_offset);
+    render_player(back_buffer, state.player_x, state.player_y);
 
     return true;
 }
+
+#load "handmade_h.jai";
 
 #import "Basic";
 #import "Math";
