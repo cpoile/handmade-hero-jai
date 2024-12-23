@@ -33,6 +33,7 @@ LATENCY_SAMPLE_COUNT      :: FRAMES_OF_AUDIO_LATENCY * (SAMPLE_RATE / GAME_UPDAT
 SAFETY_BYTES              :: ((SAMPLE_RATE * BYTES_PER_SAMPLE) / GAME_UPDATE_HZ) / 3;
 GAME_LOAD_FAILURES_MAX    :: 30;  // avoid an infinite loop if we can't load the game dll
 
+global_base_path                : string;
 global_running           := true;
 global_pause             := false;
 global_back_buffer       : Offscreen_Buffer;
@@ -76,10 +77,10 @@ Win32_State :: struct {
     input_playing_index   : int;
 }
 
-win32_get_last_write_time :: (base_path: string, filename: string) -> FILETIME {
+win32_get_last_write_time :: (filename: string) -> FILETIME {
     ret := FILETIME.{};
     find_data: WIN32_FIND_DATAW;
-    full_filename := join( base_path, filename,, temp);
+    full_filename := join(global_base_path, filename,, temp);
     full_wide_name := U.utf8_to_wide_new(full_filename,, temp);
 
     find_handle := FindFirstFileW(full_wide_name, *find_data);
@@ -91,15 +92,13 @@ win32_get_last_write_time :: (base_path: string, filename: string) -> FILETIME {
 }
 
 // Load the platform-independent game code
-win32_load_game_code :: (base_path: string, filename: string) -> Win32_Game_Code {
+win32_load_game_code :: (filename: string) -> Win32_Game_Code {
     filename_no_ext := path_strip_extension(filename);
 
-    dll_filename := join( base_path, filename,, temp);
-    pdb_filename := join( base_path, filename_no_ext, ".pdb",, temp);
-    temp_dll_filename := join(base_path, "handmade_copy.dll",, temp);
-    temp_pdb_filename := join(base_path, "handmade_copy.pdb",, temp);
+    dll_filename := join(global_base_path, filename,, temp);
+    temp_dll_filename := join(global_base_path, "handmade_copy.dll",, temp);
     ret := Win32_Game_Code.{};
-    ret.last_write_time = win32_get_last_write_time(base_path, filename);
+    ret.last_write_time = win32_get_last_write_time(filename);
 
     source_dll_wide_name := U.utf8_to_wide_new(dll_filename,, temp);
     tmp_dll_wide_name := U.utf8_to_wide_new(temp_dll_filename,, temp);
@@ -110,13 +109,6 @@ win32_load_game_code :: (base_path: string, filename: string) -> Win32_Game_Code
         return .{};
     }
 
-    source_pdb_wide_name := U.utf8_to_wide_new(pdb_filename,, temp);
-    tmp_pdb_wide_name := U.utf8_to_wide_new(temp_pdb_filename,, temp);
-    success = CopyFileW(source_pdb_wide_name, tmp_pdb_wide_name, 0);
-    if !success {
-        win32_debug("could not copy handmade.pdb, last error: %\n", GetLastError());
-        return .{};
-    }
     game_code_dll := LoadLibraryW(tmp_dll_wide_name);
     if game_code_dll == null  return .{};
 
@@ -476,7 +468,11 @@ win32_process_messages :: (win32_state: *Win32_State, keyboard_controller: *Game
                 case VK_ESCAPE;  global_running = false;
                 case #char "P";  if isDown  global_pause = !global_pause;
                 case #char "L";  if isDown {
-                    if win32_state.input_recording_index == 0 {
+                    keystate := GetKeyState(VK_SHIFT);
+                    if GetKeyState(VK_SHIFT) & (1 << 8) {
+                        win32_end_recording_input(win32_state);
+                        win32_end_input_playback(win32_state);
+                    } else if win32_state.input_recording_index == 0 {
                         win32_begin_recording_input(win32_state, 1);
                     } else {
                         win32_end_recording_input(win32_state);
@@ -503,8 +499,10 @@ win32_get_seconds_elapsed :: inline (start: s64, end: s64) -> float32 {
 }
 
 win32_begin_recording_input :: (win32_state: *Win32_State, input_recording_index: int) {
+    // TODO: Lazily write the giant memory block and use a memory copy instead?
+
     win32_state.input_recording_index = input_recording_index;
-    filename := U.utf8_to_wide_new("input_recording.hmi",, temp);
+    filename := U.utf8_to_wide_new(join(global_base_path, "input_recording.hmi",, temp),, temp);
     win32_state.recording_handle = CreateFileW(filename, GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
 
     assert(win32_state.game_memory_block.count < 0xFFFFFFFF);  // can't save more than this in one write, will have to loop.
@@ -520,7 +518,7 @@ win32_end_recording_input :: (win32_state: *Win32_State) {
 
 win32_begin_input_playback :: (win32_state: *Win32_State, input_playing_index: int) {
     win32_state.input_playing_index = input_playing_index;
-    filename := U.utf8_to_wide_new("input_recording.hmi",, temp);
+    filename := U.utf8_to_wide_new(join(global_base_path, "input_recording.hmi",, temp),, temp);
     win32_state.playback_handle = CreateFileW(filename, GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
 
     assert(win32_state.game_memory_block.count < 0xFFFFFFFF);  // can't save more than this in one write, will have to loop.
@@ -549,27 +547,14 @@ win32_playback_input :: (win32_state: *Win32_State, new_input: *Game_Input) {
         playing_index := win32_state.input_playing_index;
         win32_end_input_playback(win32_state);
         win32_begin_input_playback(win32_state, playing_index);
+        // Now read the next input (probably not necessary, I don't notice the missed input)>
+        ReadFile(win32_state.playback_handle, new_input, size_of(Game_Input), *bytes_read, null);
     }
 }
 
-
-main :: () {
-    base_path := path_strip_filename(get_path_of_running_executable());
-
-    QueryPerformanceFrequency(*global_perf_counter_freq);
-
-    // NOTE: Set the windows scheduler granularity, so our sleep can be better
-    desired_scheduler_ms :: 1;
-    sleep_is_granular := timeBeginPeriod(desired_scheduler_ms) == TIMERR_NOERROR;
-    defer timeEndPeriod(desired_scheduler_ms);
-
-    width  : s32 = 1280;
-    height : s32 = 720;
+create_window :: (width: int, height: int, name: string) -> HWND {
     window_x : int = 200;
     window_y : int = 100;
-
-    win32_resize_DIB_section(*global_back_buffer, width, height);
-    defer free(global_back_buffer.memory);
 
     hInstance := GetModuleHandleW(null);
 
@@ -600,7 +585,7 @@ main :: () {
 
     if RegisterClassExW(*window_class) == 0 {
         win32_error("RegisterClassExW returned 0.\n");
-        return;
+        return null;
     }
 
     rect : RECT;
@@ -613,21 +598,41 @@ main :: () {
     client_width  := rect.right-rect.left;
     client_height := rect.bottom-rect.top;
 
-    namew, suc, len := U.utf8_to_wide_new("Oh my, Handmade Hero",, temp);
-    name, suc2 := U.wide_to_utf8_new(namew, len,, temp);
-    print("success: %, success2 %, name : %\n", suc, suc2, name);
+    // NOTE: not sure why the title is not displaying correctly. Even tried creating the wide string manually:
+    //buff : [100]u16;
+    //MultiByteToWideChar(CP_ACP, 0, "My, Handmade Hero", -1, cast(*u16) *buff, 200);
 
-    window := CreateWindowExW(WS_EX_TOPMOST | WS_EX_LAYERED,
-                            window_class.lpszClassName,
-                            U.utf8_to_wide_new("Oh my, Handmade Hero",, temp),
-                            style,
-                            xx window_x, xx window_y,
-                            xx client_width, xx client_height,
-                            null,
-                            null,
-                            hInstance,
-                            null);
+    return CreateWindowExW(WS_EX_TOPMOST | WS_EX_LAYERED,
+                           window_class.lpszClassName,
+                           U.utf8_to_wide_new("Oh my, Handmade Hero",, temp),
+                           style,
+                           xx window_x, xx window_y,
+                           xx client_width, xx client_height,
+                           null,
+                           null,
+                           hInstance,
+                           null);
+}
 
+main :: () {
+    global_base_path = path_strip_filename(get_path_of_running_executable());
+
+    QueryPerformanceFrequency(*global_perf_counter_freq);
+
+    // NOTE: Set the windows scheduler granularity, so our sleep can be better
+    desired_scheduler_ms :: 1;
+    sleep_is_granular := timeBeginPeriod(desired_scheduler_ms) == TIMERR_NOERROR;
+    defer timeEndPeriod(desired_scheduler_ms);
+
+    width  : s32 = 1280;
+    height : s32 = 720;
+    win32_resize_DIB_section(*global_back_buffer, width, height);
+    defer free(global_back_buffer.memory);
+
+    window := create_window(width, height, "Handmade Hero");
+    if !window {
+        return;
+    }
 
     success := init_xinput();
     if !success {
@@ -656,7 +661,7 @@ main :: () {
         base_address : *void = null;
     }
     permanent_len := MEGABYTES(64);
-    temporary_len := GIGABYTES(1);
+    temporary_len := MEGABYTES(128);
 
     // TODO: Handle various memory footprints.
     total_size := permanent_len + temporary_len;
@@ -700,7 +705,7 @@ main :: () {
 
     // Load the game:
     game_load_failures := 0;
-    game := win32_load_game_code(base_path, "handmade.dll");
+    game := win32_load_game_code("handmade.dll");
     if !game.is_valid {
         log_error("could not load game code");
         return;
@@ -709,14 +714,14 @@ main :: () {
     // Main game Loop
     while (global_running) {
         // Reload the game dll if it has changed
-        new_dll_write_time := win32_get_last_write_time(base_path, "handmade.dll");
+        new_dll_write_time := win32_get_last_write_time("handmade.dll");
         if CompareFileTime(*new_dll_write_time, *game.last_write_time) == 1 {
             success := win32_unload_game_code(*game);
             if !success {
                 log_error("could not unload game code\n");
                 win32_debug("could not unload game code\n");
             }
-            game = win32_load_game_code(base_path, "handmade.dll");
+            game = win32_load_game_code("handmade.dll");
             if !game.is_valid {
                 log_error("could not load game code\n");
                 win32_debug("could not load game code\n");
