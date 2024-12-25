@@ -71,11 +71,14 @@ Game_Controller_Input :: struct {
             // NOTE: always add new buttons above the terminator
             terminator     : Game_Button_State;
         }
-    }
-}
+    };
+};
 
 Game_Input :: struct {
-    controllers: [MAX_INPUTS]Game_Controller_Input;
+    mouse_buttons : [5]Game_Button_State;
+    mouse_x       : s32;
+    mouse_y       : s32;
+    controllers   : [MAX_INPUTS]Game_Controller_Input;
 }
 
 Game_Update_And_Render :: #type (*Game_Memory, *Game_Input, *Game_Offscreen_Buffer) -> bool;

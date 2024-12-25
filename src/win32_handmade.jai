@@ -19,20 +19,10 @@
 */
 
 
-SAMPLE_RATE               : s32 : 48000;
-BYTES_PER_SAMPLE          :: size_of(s16) * 2;
-SOUND_BUFFER_SIZE         :: SAMPLE_RATE * BYTES_PER_SAMPLE;  // 1 second
-FRAMES_OF_AUDIO_LATENCY   :: 3;
-// TODO: how do we reliably query this on Windows?
-MONITOR_REFRESH_HZ        :: 60;
-GAME_UPDATE_HZ            :: 30;
-TARGET_MS_PER_GAME_UPDATE :: 1000 / cast(float32)GAME_UPDATE_HZ;
-TARGET_SECONDS_PER_FRAME  :: 1 / cast(float32)GAME_UPDATE_HZ;
-LATENCY_SAMPLE_COUNT      :: FRAMES_OF_AUDIO_LATENCY * (SAMPLE_RATE / GAME_UPDATE_HZ);
-// TODO: compute to see how low we can go
-SAFETY_BYTES              :: ((SAMPLE_RATE * BYTES_PER_SAMPLE) / GAME_UPDATE_HZ) / 3;
-GAME_LOAD_FAILURES_MAX    :: 30;  // avoid an infinite loop if we can't load the game dll
-INPUT_RECORDING_FILENAME  :: "input_recording.hmi";
+SAMPLE_RATE                   : s32 : 48000;
+BYTES_PER_SAMPLE              :: size_of(s16) * 2;
+SOUND_BUFFER_SIZE             :: SAMPLE_RATE * BYTES_PER_SAMPLE;  // 1 second
+GAME_LOAD_FAILURES_MAX        :: 30;  // avoid an infinite loop if we can't load the game dll
 
 global_base_path                : string;
 global_running           := true;
@@ -72,8 +62,16 @@ Win32_Game_Code :: struct {
     is_valid          : bool;
 }
 
+Win32_Replay_Buffer :: struct {
+    filename     : *u16;
+    file_handle  : HANDLE;
+    memory_map   : HANDLE;
+    memory_block : []u8;
+}
+
 Win32_State :: struct {
     game_memory_block     : []u8;
+    replay_buffers        : [4]Win32_Replay_Buffer;
     recording_handle      : HANDLE;
     input_recording_index : int;
     playback_handle       : HANDLE;
@@ -351,6 +349,7 @@ win32_debug_draw_vertical :: (back_buffer: *Offscreen_Buffer, x: s32, top: s32, 
     }
 }
 
+#if false {
 win32_debug_sync_display :: (back_buffer: *Offscreen_Buffer, last_play_cursor_count: u16, last_play_cursors: []s32,
     sound_output: *Win32_Sound_Output) {
 
@@ -367,6 +366,7 @@ win32_debug_sync_display :: (back_buffer: *Offscreen_Buffer, last_play_cursor_co
         x := pad_x + cast(s32)(C * cast(float32)last_play_cursor);
         win32_debug_draw_vertical(back_buffer, x, top, bottom, 0xFFFFFFFF);
     }
+}
 }
 
 win32_process_xinput_digital_button :: (
@@ -440,12 +440,13 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 };
 
 win32_process_keyboard_message :: (new_state: *Game_Button_State, isDown: bool) {
-    assert(new_state.ended_down != isDown);  // should only enter when isDown changes
-    new_state.ended_down = isDown;
-    new_state.half_transition_count += 1;
+    if new_state.ended_down != isDown {
+        new_state.ended_down = isDown;
+        new_state.half_transition_count += 1;
+    }
 }
 
-win32_process_messages :: (win32_state: *Win32_State, keyboard_controller: *Game_Controller_Input) {
+win32_process_pending_messages :: (state: *Win32_State, keyboard_controller: *Game_Controller_Input) {
     message: MSG;
     while PeekMessageA(*message, null, 0, 0, PM_REMOVE) {
         if message.message == {
@@ -474,15 +475,16 @@ win32_process_messages :: (win32_state: *Win32_State, keyboard_controller: *Game
                 case VK_ESCAPE;  global_running = false;
                 case #char "P";  if isDown  global_pause = !global_pause;
                 case #char "L";  if isDown {
-                    keystate := GetKeyState(VK_SHIFT);
-                    if GetKeyState(VK_SHIFT) & (1 << 8) {
-                        win32_end_recording_input(win32_state);
-                        win32_end_input_playback(win32_state);
-                    } else if win32_state.input_recording_index == 0 {
-                        win32_begin_recording_input(win32_state, 1);
+                    // TODO: this doesn't seem to work if we change to -1 being the "no playing" state...
+                    if state.input_playing_index == 0 {
+                        if state.input_recording_index == 0 {
+                            win32_begin_recording_input(state, 1);
+                        } else {
+                            win32_end_recording_input(state);
+                            win32_begin_input_playback(state, 1);
+                        }
                     } else {
-                        win32_end_recording_input(win32_state);
-                        win32_begin_input_playback(win32_state, 1);
+                        win32_end_input_playback(state);
                     }
                 }
                 }
@@ -504,61 +506,68 @@ win32_get_seconds_elapsed :: inline (start: s64, end: s64) -> float32 {
     return cast(float32)(end - start) / cast(float32)global_perf_counter_freq;
 }
 
-win32_begin_recording_input :: (win32_state: *Win32_State, input_recording_index: int) {
-    // TODO: Lazily write the giant memory block and use a memory copy instead?
+win32_build_input_file_name :: (input_stream: bool, slot_index: int) -> *u16 {
+    filename := sprint("input_recording_%_%.hmi", slot_index, ifx input_stream "input" else "state",, temp);
+    return U.utf8_to_wide_new(join(global_base_path, filename,, temp),, temp);
+}
 
-    win32_state.input_recording_index = input_recording_index;
-    filename := U.utf8_to_wide_new(join(global_base_path, INPUT_RECORDING_FILENAME,, temp),, temp);
-    win32_state.recording_handle = CreateFileW(filename, GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
-    ignored: u32;
+win32_get_replay_buffer :: (state: *Win32_State, input_recording_index: int) -> Win32_Replay_Buffer {
+    assert(input_recording_index >= 0);
+    assert(input_recording_index < state.replay_buffers.count);
+    return state.replay_buffers[input_recording_index];
+}
 
-    // Doesn't seem to work, sad.
-    // success := DeviceIoControl(win32_state.recording_handle, FSCTL_SET_SPARSE, null, 0, null, 0, *ignored, null);
+win32_begin_recording_input :: (state: *Win32_State, input_recording_index: int) {
+    replay_buffer := win32_get_replay_buffer(state, input_recording_index);
+    if replay_buffer.memory_block.data {
+        state.input_recording_index = input_recording_index;
+        filename := win32_build_input_file_name(true, input_recording_index);
+        state.recording_handle = CreateFileW(filename, GENERIC_WRITE, 0, null, CREATE_ALWAYS, 0, null);
+        memcpy(replay_buffer.memory_block.data,
+               state.game_memory_block.data,
+               state.game_memory_block.count);
+    }
+}
 
-    assert(win32_state.game_memory_block.count < 0xFFFFFFFF);  // can't save more than this in one write, will have to loop.
+win32_end_recording_input :: (state: *Win32_State) {
+    CloseHandle(state.recording_handle);
+    state.input_recording_index = 0;
+}
+
+win32_begin_input_playback :: (state: *Win32_State, input_playing_index: int) {
+    replay_buffer := win32_get_replay_buffer(state, input_playing_index);
+    if replay_buffer.memory_block.data {
+        state.input_playing_index = input_playing_index;
+
+        filename := win32_build_input_file_name(true, input_playing_index);
+        state.playback_handle = CreateFileW(filename, GENERIC_READ, 0, null, OPEN_EXISTING, 0, null);
+
+        memcpy(state.game_memory_block.data, replay_buffer.memory_block.data, state.game_memory_block.count);
+    }
+}
+
+win32_end_input_playback :: (state: *Win32_State) {
+    CloseHandle(state.playback_handle);
+    state.input_playing_index = 0;
+}
+
+win32_record_input :: (state: Win32_State, new_input: Game_Input) {
     bytes_written : DWORD;
-    WriteFile(win32_state.recording_handle, win32_state.game_memory_block.data, cast(u32)win32_state.game_memory_block.count,
-              *bytes_written, null);
+    WriteFile(state.recording_handle, *new_input, size_of(Game_Input), *bytes_written, null);
 }
 
-win32_end_recording_input :: (win32_state: *Win32_State) {
-    CloseHandle(win32_state.recording_handle);
-    win32_state.input_recording_index = 0;
-}
-
-win32_begin_input_playback :: (win32_state: *Win32_State, input_playing_index: int) {
-    win32_state.input_playing_index = input_playing_index;
-    filename := U.utf8_to_wide_new(join(global_base_path, INPUT_RECORDING_FILENAME,, temp),, temp);
-    win32_state.playback_handle = CreateFileW(filename, GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
-
-    assert(win32_state.game_memory_block.count < 0xFFFFFFFF);  // can't save more than this in one write, will have to loop.
+win32_playback_input :: (state: *Win32_State, new_input: *Game_Input) {
     bytes_read : DWORD;
-    ReadFile(win32_state.playback_handle, win32_state.game_memory_block.data, cast(u32)win32_state.game_memory_block.count,
-              *bytes_read, null);
-}
-
-win32_end_input_playback :: (win32_state: *Win32_State) {
-    CloseHandle(win32_state.playback_handle);
-    win32_state.input_playing_index = 0;
-}
-
-win32_record_input :: (win32_state: Win32_State, new_input: Game_Input) {
-    bytes_written : DWORD;
-    WriteFile(win32_state.recording_handle, *new_input, size_of(Game_Input), *bytes_written, null);
-}
-
-win32_playback_input :: (win32_state: *Win32_State, new_input: *Game_Input) {
-    bytes_read : DWORD;
-    if !ReadFile(win32_state.playback_handle, new_input, size_of(Game_Input), *bytes_read, null) {
+    if !ReadFile(state.playback_handle, new_input, size_of(Game_Input), *bytes_read, null) {
         return;
     }
     if bytes_read == 0 {
         // finished reading file
-        playing_index := win32_state.input_playing_index;
-        win32_end_input_playback(win32_state);
-        win32_begin_input_playback(win32_state, playing_index);
+        playing_index := state.input_playing_index;
+        win32_end_input_playback(state);
+        win32_begin_input_playback(state, playing_index);
         // Now read the next input (probably not necessary, I don't notice the missed input)>
-        ReadFile(win32_state.playback_handle, new_input, size_of(Game_Input), *bytes_read, null);
+        ReadFile(state.playback_handle, new_input, size_of(Game_Input), *bytes_read, null);
     }
 }
 
@@ -664,7 +673,6 @@ main :: () {
     defer free(samples);
 
     // NOTE: Casey uses VirtualAlloc, so I'm going to do the same (for now). We're simulating our own allocator, so why not go raw.
-
     #if HANDMADE_INTERNAL {
         // in windows 64-bit, first 8 terabytes are reserved for the application
         base_address := cast(*void)TERABYTES(2);
@@ -692,11 +700,41 @@ main :: () {
         write_entire_file = DEBUG_platform_write_entire_file,
     };
 
-    // record the entire memory block:
+    // Store the entire memory block (for when we want to save and replay):
     game_state := Win32_State.{
         game_memory_block = .{total_size, permanent_mem},
     };
 
+    // TODO: Recording ystem still seems to take too long on record start --
+    // find out what Windows is doing and if we can speed up / defer some of
+    // that processing.
+    for * buf: game_state.replay_buffers {
+        filename := win32_build_input_file_name(false, it_index);
+        buf.file_handle = CreateFileW(filename, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
+
+        max_high := cast(u32)(total_size >> 32);
+        max_low  := cast(u32)(total_size & 0xFFFFFFFF);
+        buf.memory_map = CreateFileMappingW(buf.file_handle, null,
+                                            PAGE_READWRITE,
+                                            max_high,
+                                            max_low,
+                                            null);
+        err := GetLastError();
+        buf.memory_block = .{total_size, MapViewOfFile(buf.memory_map, FILE_MAP_ALL_ACCESS, 0, 0, xx total_size)};
+    }
+
+    // Refresh rates
+    monitor_refresh_rate : s32 = 60;  // default
+    refresh_dc := GetDC(window);
+    win32_refresh_rate := GetDeviceCaps(refresh_dc, VREFRESH);
+    ReleaseDC(window, refresh_dc);
+    if win32_refresh_rate > 1 {
+        monitor_refresh_rate = win32_refresh_rate;
+    }
+
+    game_update_hz            := monitor_refresh_rate / 2.0;
+    target_seconds_per_frame  := 1 / game_update_hz;
+    safety_bytes              := cast(s32)(((SAMPLE_RATE * BYTES_PER_SAMPLE) / game_update_hz) / 3);
 
     // Frame timings
     last_counter     := win32_get_wall_clock();
@@ -704,7 +742,7 @@ main :: () {
     flip_wall_clock  := win32_get_wall_clock();
 
     debug_last_play_cursor_index : u16 = 0;
-    debug_last_play_cursor: [GAME_UPDATE_HZ / 2]s32;
+    debug_last_play_cursor: [30]s32;
 
     audio_latency_bytes : s32;
     audio_latency_sec   : float32;
@@ -754,7 +792,20 @@ main :: () {
             new_keyboard_controller.buttons[i].ended_down = old_keyboard_controller.buttons[i].ended_down;
         }
 
-        win32_process_messages(*game_state, new_keyboard_controller);
+        win32_process_pending_messages(*game_state, new_keyboard_controller);
+
+        old_input.mouse_buttons = new_input.mouse_buttons;
+        point: POINT;
+        GetCursorPos(*point);
+        ScreenToClient(window, *point);
+        new_input.mouse_x          = point.x;
+        new_input.mouse_y          = point.y;
+
+        win32_process_keyboard_message(*new_input.mouse_buttons[0], GetKeyState(VK_LBUTTON) & (1 << 15) != 0);
+        win32_process_keyboard_message(*new_input.mouse_buttons[1], GetKeyState(VK_MBUTTON) & (1 << 15) != 0);
+        win32_process_keyboard_message(*new_input.mouse_buttons[2], GetKeyState(VK_RBUTTON) & (1 << 15) != 0);
+        win32_process_keyboard_message(*new_input.mouse_buttons[3], GetKeyState(VK_XBUTTON1) & (1 << 15) != 0);
+        win32_process_keyboard_message(*new_input.mouse_buttons[4], GetKeyState(VK_XBUTTON2) & (1 << 15) != 0);
 
         // TODO: Need to not poll disconnected controllers to avoid xinput frame rate hit on older libraries
         // TODO: Should we poll this more frequently?
@@ -871,11 +922,11 @@ main :: () {
                 sound_is_valid = true;
             }
 
-            expected_sound_bytes_per_frame := (SAMPLE_RATE * BYTES_PER_SAMPLE) / GAME_UPDATE_HZ;
+            expected_sound_bytes_per_frame := cast(s32)((SAMPLE_RATE * BYTES_PER_SAMPLE) / game_update_hz);
 
             // used for Casey's debugging lines (which we aren't drawing):
-            seconds_left_until_flip := TARGET_SECONDS_PER_FRAME - from_begin_to_audio_seconds;
-            expected_bytes_until_flip := cast(s32)((seconds_left_until_flip / TARGET_SECONDS_PER_FRAME) * cast(float32) expected_sound_bytes_per_frame);
+            seconds_left_until_flip := target_seconds_per_frame - from_begin_to_audio_seconds;
+            expected_bytes_until_flip := cast(s32)((seconds_left_until_flip / target_seconds_per_frame) * cast(float32) expected_sound_bytes_per_frame);
 
             expected_frame_boundary_byte := play_cursor + expected_bytes_until_flip;
 
@@ -885,14 +936,14 @@ main :: () {
             }
             assert(safe_write_cursor >= play_cursor);
 
-            safe_write_cursor += SAFETY_BYTES;
+            safe_write_cursor += safety_bytes;
             audio_card_is_low_latency := safe_write_cursor < expected_frame_boundary_byte;
 
             byte_to_lock = (sound_output.running_sample_index * BYTES_PER_SAMPLE) % SOUND_BUFFER_SIZE;
             if audio_card_is_low_latency {
                 target_cursor = expected_frame_boundary_byte + expected_sound_bytes_per_frame;
             } else {
-                target_cursor = write_cursor + expected_sound_bytes_per_frame + SAFETY_BYTES;
+                target_cursor = write_cursor + expected_sound_bytes_per_frame + safety_bytes;
             }
             target_cursor %= SOUND_BUFFER_SIZE;
 
@@ -915,6 +966,7 @@ main :: () {
             audio_latency_bytes = ifx wrapped_around then write_cursor + SOUND_BUFFER_SIZE - play_cursor else write_cursor - play_cursor;
             audio_latency_sec = (cast(float32)audio_latency_bytes / cast(float32)BYTES_PER_SAMPLE / cast(float32)SAMPLE_RATE);
 
+#if false {
             win32_debug(
                     "BTL:  % -  PC: %  WC: %  TC: %  DELTA: %  LATENCY_SEC: %  Low Latency? %\n",
                     byte_to_lock,
@@ -925,6 +977,7 @@ main :: () {
                     audio_latency_sec,
                     audio_card_is_low_latency
             );
+}
         }
 
         // Frame timings
@@ -932,19 +985,19 @@ main :: () {
         work_sec_elapsed := win32_get_seconds_elapsed(last_counter, work_counter);
 
         sec_elapsed_for_frame := work_sec_elapsed;
-        if sec_elapsed_for_frame < TARGET_SECONDS_PER_FRAME {
+        if sec_elapsed_for_frame < target_seconds_per_frame {
             if sleep_is_granular {
-                sleep_ms := cast(s32)(1000 * (TARGET_SECONDS_PER_FRAME - sec_elapsed_for_frame)) - 1;  // -1 makes it work...
+                sleep_ms := cast(s32)(1000 * (target_seconds_per_frame - sec_elapsed_for_frame)) - 1;  // -1 makes it work...
                 if sleep_ms > 0  Sleep(sleep_ms);
             }
 
             sec_elapsed_for_frame = win32_get_seconds_elapsed(last_counter, win32_get_wall_clock());
-            //assert(sec_elapsed_for_frame < TARGET_SECONDS_PER_FRAME);
-            while sec_elapsed_for_frame < TARGET_SECONDS_PER_FRAME {
+            //assert(sec_elapsed_for_frame < target_seconds_per_frame);
+            while sec_elapsed_for_frame < target_seconds_per_frame {
                 sec_elapsed_for_frame = win32_get_seconds_elapsed(last_counter, win32_get_wall_clock());
             }
         } else {
-            log_error("missed a frame! sec_elapsed_for_frame > TARGET_SECONDS_PER_FRAME");
+            log_error("missed a frame! sec_elapsed_for_frame > target_seconds_per_frame");
         }
 
         end_counter := win32_get_wall_clock();
@@ -954,7 +1007,7 @@ main :: () {
         // FLIP THE FRAME:
         dims := get_window_dimensions(window);
 
-#if HANDMADE_INTERNAL {
+#if false {
         win32_debug_sync_display(*global_back_buffer, debug_last_play_cursor_index, debug_last_play_cursor, *sound_output);
 }
 
@@ -983,6 +1036,7 @@ main :: () {
         debug_last_play_cursor_index %= debug_last_play_cursor.count;
 }
 
+#if false {
         // Using rdtsc
         end_cycle_count := rdtsc();
         cycles_elapsed := end_cycle_count - last_cycle_count;
@@ -994,7 +1048,7 @@ main :: () {
  }
 
         last_cycle_count = end_cycle_count;
-
+}
         new_input, old_input = old_input, new_input;
     }
 }

@@ -122,6 +122,12 @@ game_update_and_render :: (
     render_weird_gradient(back_buffer, state.blue_offset, state.green_offset);
     render_player(back_buffer, state.player_x, state.player_y);
 
+    render_player(back_buffer, input.mouse_x,  input.mouse_y);
+
+    for i: 0..cast(s32)4 {
+        if input.mouse_buttons[i].ended_down  render_player(back_buffer, 20 * i,  10);
+    }
+
     return true;
 }
 
