@@ -392,7 +392,7 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 
         if message == {
         case WM_ACTIVATEAPP;
-#if false {
+#if true {
             if WParam {
                 SetLayeredWindowAttributes(window, RGB(0, 0, 0), 255, LWA_ALPHA);
             } else {
@@ -622,7 +622,7 @@ create_window :: (width: int, height: int, name: string) -> HWND {
     //MultiByteToWideChar(CP_ACP, 0, "My, Handmade Hero", -1, cast(*u16) *buff, 200);
 
     // uncomment when we want to do the stay on-top and transparent window (also un-#if near WM_ACTIVATEAPP)
-    return CreateWindowExW(0, //WS_EX_TOPMOST | WS_EX_LAYERED,
+    return CreateWindowExW(WS_EX_TOPMOST | WS_EX_LAYERED,
                            window_class.lpszClassName,
                            U.utf8_to_wide_new("Oh my, Handmade Hero",, temp),
                            style,
@@ -644,8 +644,8 @@ main :: () {
     sleep_is_granular := timeBeginPeriod(desired_scheduler_ms) == TIMERR_NOERROR;
     defer timeEndPeriod(desired_scheduler_ms);
 
-    width  : s32 = 1280;
-    height : s32 = 720;
+    width  : s32 = 960;
+    height : s32 = 540;
     win32_resize_DIB_section(*global_back_buffer, width, height);
     defer free(global_back_buffer.memory);
 
@@ -749,7 +749,7 @@ main :: () {
     sound_is_valid      := false;
 
     message: MSG;
-    new_input := Game_Input.{};
+    new_input := Game_Input.{seconds_to_advance_over_update = target_seconds_per_frame};
     old_input := Game_Input.{};
 
     // Load the game:

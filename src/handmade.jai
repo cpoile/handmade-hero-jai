@@ -1,27 +1,121 @@
 // Platform-independent game code
 
 
-game_sound_output :: (sound_buffer: *Game_Sound_Buffer, tone_hz: s32, t_sine: *float32) {
+game_sound_output :: (sound_buffer: *Game_Sound_Buffer) {
     //tone_volume := 3000;
     tone_volume := 0;
-    wave_period := sound_buffer.samples_per_second / tone_hz;
+    //wave_period := sound_buffer.samples_per_second / tone_hz;
 
     sample_out := sound_buffer.samples;
     for i: 0 .. sound_buffer.samples_count-1 {
+#if false {
         sine_val := sin(<<t_sine);
         sample_value := cast(s16)(sine_val * cast(float32)tone_volume);
-        <<sample_out = sample_value;
+} else {
+        sample_value : s16 = 0;
+}
+        sample_out.* = sample_value;
         sample_out += 1;
         <<sample_out = sample_value;
         sample_out += 1;
 
-        <<t_sine += 2.0 * PI / cast(float32)wave_period;
+#if false {
+        << t_sine += 2.0 * PI / cast(float32)wave_period;
         if <<t_sine > 2.0 * PI {
             <<t_sine -= 2.0 * PI;
         }
+}
     }
 }
 
+// rectangle will fill up to but not including final row/col
+draw_rectangle :: (buffer: *Game_Offscreen_Buffer,
+    real_min_x: float32, real_min_y: float32, real_max_x: float32, real_max_y: float32, color: u32)
+{
+    min_x := round(real_min_x);
+    min_y := round(real_min_y);
+    max_x := round(real_max_x);
+    max_y := round(real_max_y);
+
+    if min_x < 0  min_x = 0;
+    if min_y < 0  min_y = 0;
+    if max_x > buffer.width  max_x = buffer.width;
+    if max_y > buffer.width  max_y = buffer.width;
+
+    // don't try to draw if we have zero width or zero height
+    if min_x == max_x  return;
+    if min_y == max_y  return;
+
+    row := buffer.memory + (min_y * buffer.pitch + min_x * buffer.bytes_per_pixel);
+
+    for y: min_y..max_y-1 {
+        pixel := cast(*u32)row;
+        for x: min_x..max_x-1 {
+            <<pixel = color;
+            pixel += 1;
+        }
+
+        row += buffer.pitch;
+    }
+}
+
+round :: inline (x: float32) -> s32 {
+    return cast,trunc(s32)(x + 0.5);
+}
+
+// NOTE: at the moment this has to be a very fast function, it cannot be more than a ms or so.
+#program_export
+game_get_sound_samples :: (game_memory: *Game_Memory, sound_buffer: *Game_Sound_Buffer) {
+    // TODO: Allow sample offsets here (eg, set sound further out in the future, or closer to immediately)
+    state := cast(*Game_State)game_memory.permanent.data;
+
+    game_sound_output(sound_buffer);
+}
+
+
+// NOTE: may expand in the future
+// need FOUR THINGS: timing, controller/keyboard input, bitmap buffer to use, sound buffer to use
+
+#program_export
+game_update_and_render :: (
+    game_memory: *Game_Memory,
+    input: *Game_Input,
+    buffer: *Game_Offscreen_Buffer
+) -> bool {
+    assert(game_memory != null);
+    #if HANDMADE_DEBUG {
+        assert(size_of(Game_State) <= game_memory.permanent.count);
+        assert((*input.controllers[0].terminator - *input.controllers[0].up) == input.controllers[0].buttons.count);
+    }
+
+    state := cast(*Game_State)game_memory.permanent.data;
+    if !game_memory.initialized {
+        game_memory.initialized = true;
+    }
+
+    for i: 0..MAX_INPUTS-1 {
+        cur_input := input.controllers[i];
+
+        if cur_input.analog {
+             // NOTE: Use analog movement tuning
+        } else {
+            // NOTE: Use digital movement tuning
+        }
+    }
+
+
+    draw_rectangle(buffer, 0, 0, cast(float32)buffer.width, cast(float32)buffer.height, 0x00FF00FF);
+    draw_rectangle(buffer,10, 20, 300, 400, 0x0000FFFF);
+
+    return true;
+}
+
+#load "handmade_h.jai";
+
+#import "Basic";
+#import "Math";
+
+/*
 render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer, xOffset: int, yOffset: int) {
     row := back_buffer.memory;
     for y: 0..back_buffer.height-1 {
@@ -39,99 +133,4 @@ render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer, xOffset: int, yOf
         row += back_buffer.pitch;
     }
 }
-
-render_player :: (buffer: *Game_Offscreen_Buffer, player_x: s32, player_y: s32) {
-    endOfBuffer := buffer.memory + buffer.pitch * buffer.height;
-    top    := player_y;
-    bottom := player_y+10;
-
-    for x: player_x..player_x+10 {
-        pixel := buffer.memory + x * buffer.bytes_per_pixel + top * buffer.pitch;
-        for y: top..bottom {
-            if pixel <= buffer.memory || (pixel+4) >= endOfBuffer  continue;
-            <<(cast(*u32)pixel) = 0xFFFFFFFF;
-            pixel += buffer.pitch;
-        }
-    }
-}
-
-
-// NOTE: at the moment this has to be a very fast function, it cannot be more than a ms or so.
-#program_export
-game_get_sound_samples :: (game_memory: *Game_Memory, sound_buffer: *Game_Sound_Buffer) {
-    // TODO: Allow sample offsets here (eg, set sound further out in the future, or closer to immediately)
-    state := cast(*Game_State)game_memory.permanent.data;
-
-    game_sound_output(sound_buffer, state.tone_hz, *state.t_sine);
-}
-
-
-// NOTE: may expand in the future
-// need FOUR THINGS: timing, controller/keyboard input, bitmap buffer to use, sound buffer to use
-
-#program_export
-game_update_and_render :: (
-    game_memory: *Game_Memory,
-    input: *Game_Input,
-    back_buffer: *Game_Offscreen_Buffer
-) -> bool {
-    assert(game_memory != null);
-    #if HANDMADE_DEBUG {
-        assert(size_of(Game_State) <= game_memory.permanent.count);
-        assert((*input.controllers[0].terminator - *input.controllers[0].up) == input.controllers[0].buttons.count);
-    }
-
-    state := cast(*Game_State)game_memory.permanent.data;
-    if !state.initialized {
-        state.tone_hz = 256;
-        state.player_x = 100;
-        state.player_y = 100;
-        state.initialized = true;
-
-        bitmap_memory, success := game_memory.read_entire_file(#file);
-        if !success  log_error("failed to read file");
-
-        success = game_memory.write_entire_file("../data/test_file_output.txt", bitmap_memory);
-        if !success  log_error("failed to write file");
-
-        game_memory.free_file_memory(*bitmap_memory);
-    }
-
-    for i: 0..MAX_INPUTS-1 {
-        cur_input := input.controllers[i];
-
-        if cur_input.analog {
-            // NOTE: Use analog movement tuning
-            state.tone_hz       = cast(s32)clamp(261 + 64 * cur_input.stick_avg_y, 120, 1566);
-            state.blue_offset  += cast(s32)(cur_input.stick_avg_x * 15);
-            state.green_offset -= cast(s32)(cur_input.stick_avg_y * 15);
-        } else {
-            state.blue_offset  += cast(s32)((ifx cur_input.right.ended_down 1 else 0) * 15);
-            state.blue_offset  -= cast(s32)((ifx cur_input.left.ended_down 1 else 0) * 15);
-            state.green_offset -= cast(s32)((ifx cur_input.up.ended_down 1 else 0) * 15);
-            state.green_offset += cast(s32)((ifx cur_input.down.ended_down 1 else 0) * 15);
-        }
-
-        state.player_x += cast(s32)(15*cur_input.stick_avg_x);
-        state.player_y -= cast(s32)(15*cur_input.stick_avg_y);
-        if cur_input.a.ended_down {
-            state.player_y -= 10;
-        }
-    }
-
-    render_weird_gradient(back_buffer, state.blue_offset, state.green_offset);
-    render_player(back_buffer, state.player_x, state.player_y);
-
-    render_player(back_buffer, input.mouse_x,  input.mouse_y);
-
-    for i: 0..cast(s32)4 {
-        if input.mouse_buttons[i].ended_down  render_player(back_buffer, 20 * i,  10);
-    }
-
-    return true;
-}
-
-#load "handmade_h.jai";
-
-#import "Basic";
-#import "Math";
+*/

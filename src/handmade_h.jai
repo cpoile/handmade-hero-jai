@@ -7,19 +7,12 @@ GIGABYTES :: (v: $T) -> T #expand { return MEGABYTES(v) * 1024; }
 TERABYTES :: (v: $T) -> T #expand { return GIGABYTES(v) * 1024; }
 
 Game_State :: struct {
-    initialized  : bool;
-    blue_offset  : s32;
-    green_offset : s32;
-    tone_hz      : s32;
-    t_sine       : float32;
-    player_x     : s32 = 100;
-    player_y     : s32 = 100;
-    t_jump       : float32;
 }
 
 Game_Memory :: struct {
-    permanent : []u8;
-    temporary : []u8;
+    permanent         : []u8;
+    temporary         : []u8;
+    initialized       : bool;
 
     // Procs from the platform layer
     read_entire_file  : DEBUG_Platform_Read_Entire_File;
@@ -75,10 +68,11 @@ Game_Controller_Input :: struct {
 };
 
 Game_Input :: struct {
-    mouse_buttons : [5]Game_Button_State;
-    mouse_x       : s32;
-    mouse_y       : s32;
-    controllers   : [MAX_INPUTS]Game_Controller_Input;
+    mouse_buttons                  : [5]Game_Button_State;
+    mouse_x                        : s32;
+    mouse_y                        : s32;
+    seconds_to_advance_over_update : float32;
+    controllers                    : [MAX_INPUTS]Game_Controller_Input;
 }
 
 Game_Update_And_Render :: #type (*Game_Memory, *Game_Input, *Game_Offscreen_Buffer) -> bool;
