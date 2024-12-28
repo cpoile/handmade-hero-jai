@@ -77,9 +77,31 @@ Game_Input :: struct {
     controllers   : [MAX_INPUTS]Game_Controller_Input;
 }
 
+Tile_Map :: struct {
+    count_x      : u32;
+    count_y      : u32;
+    upper_left_x : float;
+    upper_left_y : float;
+    tile_height  : float;
+    tile_width   : float;
+
+    tiles        : []u32;
+}
+
+World :: struct {
+    // TODO: beginner's sparseness
+    count_x: u32;
+    count_y: u32;
+    tile_maps: *Tile_Map;
+}
+
+//
+// Functions the dll provides
+//
 Game_Update_And_Render :: #type (*Game_Memory, *Game_Input, *Game_Offscreen_Buffer) -> bool;
 Game_Get_Sound_Samples :: #type (*Game_Memory, *Game_Sound_Buffer);
 
+//
 // Functions the platform layer provides
 //
 DEBUG_Platform_Read_Entire_File  :: #type (filename: string) -> memory: []u8, ok: bool;

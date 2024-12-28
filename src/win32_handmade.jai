@@ -73,7 +73,9 @@ Win32_Replay_Buffer :: struct {
 
 Win32_State :: struct {
     game_memory_block     : []u8;
-    replay_buffers        : [4]Win32_Replay_Buffer;
+
+    // NOTE: can change this when we need more buffers.
+    replay_buffers        : [1]Win32_Replay_Buffer;
     recording_handle      : HANDLE;
     input_recording_index : int;
     playback_handle       : HANDLE;
@@ -337,8 +339,11 @@ win32_resize_DIB_section :: (buffer: *Offscreen_Buffer, width: s32, height: s32)
 win32_display_buffer_in_window :: (buffer: *Offscreen_Buffer, deviceContext: HDC, destWidth: int, destHeight: int) {
     // NOTE: during prototyping, we're going to always blit 1-to-1 pixels to remove stretching artifacts
     // while we're learning to code the renderer.
+
+    x_offset := 10;
+    y_offset := 10;
     StretchDIBits(deviceContext,
-                  0, 0, buffer.width, buffer.height,
+                  x_offset, y_offset, buffer.width, buffer.height,
                   0, 0, buffer.width, buffer.height,
                   buffer.memory, *buffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
 }
@@ -576,7 +581,7 @@ win32_playback_input :: (state: *Win32_State, new_input: *Game_Input) {
 }
 
 create_window :: (width: int, height: int, name: string) -> HWND {
-    window_x : int = 100;
+    window_x : int = 200;
     window_y : int = 400;
 
     hInstance := GetModuleHandleW(null);
@@ -659,7 +664,8 @@ main :: () {
     win32_resize_DIB_section(*global_back_buffer, width, height);
     defer free(global_back_buffer.memory);
 
-    window := create_window(width, height, "Handmade Hero");
+    // +20 to get a black border
+    window := create_window(width + 20, height + 20, "Handmade Hero");
     if !window {
         return;
     }
