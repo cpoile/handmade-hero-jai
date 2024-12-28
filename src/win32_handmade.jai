@@ -18,11 +18,13 @@
   Just a partial list of stuff!
 */
 
+// Set true when we want to do the stay on-top and transparent window thing:
+LAYERED_WINDOW :: true;
 
-SAMPLE_RATE                   : s32 : 48000;
-BYTES_PER_SAMPLE              :: size_of(s16) * 2;
-SOUND_BUFFER_SIZE             :: SAMPLE_RATE * BYTES_PER_SAMPLE;  // 1 second
-GAME_LOAD_FAILURES_MAX        :: 30;  // avoid an infinite loop if we can't load the game dll
+SAMPLE_RATE            : s32 : 48000;
+BYTES_PER_SAMPLE       :: size_of(s16) * 2;
+SOUND_BUFFER_SIZE      :: SAMPLE_RATE * BYTES_PER_SAMPLE;  // 1 second
+GAME_LOAD_FAILURES_MAX :: 30;  // avoid an infinite loop if we can't load the game dll
 
 global_base_path                : string;
 global_running           := true;
@@ -360,10 +362,10 @@ win32_debug_sync_display :: (back_buffer: *Offscreen_Buffer, last_play_cursor_co
 
     // remember Casey's talk on dimentional analysis: to change something mapped in sound buffer size into back_buffer size,
     // mult by coefficient C. The sound buffer sized thing cancels out with the denominator, leaving back_buffer units.
-    C := cast(float32)(back_buffer.width - 2 * pad_x) / cast(float32)SOUND_BUFFER_SIZE;
+    C := cast(float)(back_buffer.width - 2 * pad_x) / cast(float)SOUND_BUFFER_SIZE;
     for i: 0..last_play_cursors.count-1 {
         last_play_cursor := last_play_cursors[i];
-        x := pad_x + cast(s32)(C * cast(float32)last_play_cursor);
+        x := pad_x + cast(s32)(C * cast(float)last_play_cursor);
         win32_debug_draw_vertical(back_buffer, x, top, bottom, 0xFFFFFFFF);
     }
 }
@@ -392,10 +394,12 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
 
         if message == {
         case WM_ACTIVATEAPP;
-#if true {
+#if LAYERED_WINDOW {
             if WParam {
+                win32_debug("foreground");
                 SetLayeredWindowAttributes(window, RGB(0, 0, 0), 255, LWA_ALPHA);
             } else {
+                win32_debug("background");
                 SetLayeredWindowAttributes(window, RGB(0, 0, 0), 64, LWA_ALPHA);
             }
 }
@@ -502,8 +506,8 @@ win32_get_wall_clock :: inline () -> s64 {
     return res;
 }
 
-win32_get_seconds_elapsed :: inline (start: s64, end: s64) -> float32 {
-    return cast(float32)(end - start) / cast(float32)global_perf_counter_freq;
+win32_get_seconds_elapsed :: inline (start: s64, end: s64) -> float {
+    return cast(float)(end - start) / cast(float)global_perf_counter_freq;
 }
 
 win32_build_input_file_name :: (input_stream: bool, slot_index: int) -> *u16 {
@@ -572,8 +576,8 @@ win32_playback_input :: (state: *Win32_State, new_input: *Game_Input) {
 }
 
 create_window :: (width: int, height: int, name: string) -> HWND {
-    window_x : int = 200;
-    window_y : int = 100;
+    window_x : int = 100;
+    window_y : int = 400;
 
     hInstance := GetModuleHandleW(null);
 
@@ -598,7 +602,7 @@ create_window :: (width: int, height: int, name: string) -> HWND {
     window_class.hInstance     = hInstance;
     window_class.hIcon         = icon;
     window_class.hCursor       = LoadCursorW(null, IDC_ARROW);
-    window_class.hbrBackground = cast(HBRUSH) GetStockObject(WHITE_BRUSH);
+    window_class.hbrBackground = cast(HBRUSH) GetStockObject(BLACK_BRUSH);
     window_class.lpszMenuName  = null;
     window_class.lpszClassName = U.utf8_to_wide_new("HandmadeHeroWindowClass",, temp);
 
@@ -621,8 +625,12 @@ create_window :: (width: int, height: int, name: string) -> HWND {
     //buff : [100]u16;
     //MultiByteToWideChar(CP_ACP, 0, "My, Handmade Hero", -1, cast(*u16) *buff, 200);
 
-    // uncomment when we want to do the stay on-top and transparent window (also un-#if near WM_ACTIVATEAPP)
-    return CreateWindowExW(WS_EX_TOPMOST | WS_EX_LAYERED,
+    #if LAYERED_WINDOW {
+        FLAGS : s32 = WS_EX_TOPMOST | WS_EX_LAYERED;
+    } else {
+        FLAGS : s32 = 0;
+    }
+    hwnd := CreateWindowExW(FLAGS,
                            window_class.lpszClassName,
                            U.utf8_to_wide_new("Oh my, Handmade Hero",, temp),
                            style,
@@ -632,6 +640,8 @@ create_window :: (width: int, height: int, name: string) -> HWND {
                            null,
                            hInstance,
                            null);
+    SetWindowTextA(hwnd, to_c_string("Oh my, Handmade Hero"));
+    return hwnd;
 }
 
 main :: () {
@@ -732,7 +742,7 @@ main :: () {
         monitor_refresh_rate = win32_refresh_rate;
     }
 
-    game_update_hz            := monitor_refresh_rate / 2.0;
+    game_update_hz            := monitor_refresh_rate / 1.0;
     target_seconds_per_frame  := 1 / game_update_hz;
     safety_bytes              := cast(s32)(((SAMPLE_RATE * BYTES_PER_SAMPLE) / game_update_hz) / 3);
 
@@ -745,11 +755,11 @@ main :: () {
     debug_last_play_cursor: [30]s32;
 
     audio_latency_bytes : s32;
-    audio_latency_sec   : float32;
+    audio_latency_sec   : float;
     sound_is_valid      := false;
 
     message: MSG;
-    new_input := Game_Input.{seconds_to_advance_over_update = target_seconds_per_frame};
+    new_input := Game_Input.{};
     old_input := Game_Input.{};
 
     // Load the game:
@@ -762,6 +772,8 @@ main :: () {
 
     // Main game Loop
     while (global_running) {
+        new_input.dt_for_frame = target_seconds_per_frame;
+
         // Reload the game dll if it has changed
         new_dll_write_time := win32_get_last_write_time("handmade.dll");
         if CompareFileTime(*new_dll_write_time, *game.last_write_time) == 1 {
@@ -825,10 +837,10 @@ main :: () {
 
                 // TODO: this is a square deadzone, check XINPUT to verify if the deadzone is round
                 dzone := XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
-                denom : float32 = xx ifx pad.sThumbLX < dzone then 32768 else 32767;
-                x := cast(float32)pad.sThumbLX / denom;
+                denom : float = xx ifx pad.sThumbLX < dzone then 32768 else 32767;
+                x := cast(float)pad.sThumbLX / denom;
                 denom = xx ifx pad.sThumbLY < -dzone then 32768 else 32767;
-                y := cast(float32)pad.sThumbLY / denom;
+                y := cast(float)pad.sThumbLY / denom;
 
                 if x != 0 || y != 0  new_controller.analog = true;
 
@@ -926,7 +938,7 @@ main :: () {
 
             // used for Casey's debugging lines (which we aren't drawing):
             seconds_left_until_flip := target_seconds_per_frame - from_begin_to_audio_seconds;
-            expected_bytes_until_flip := cast(s32)((seconds_left_until_flip / target_seconds_per_frame) * cast(float32) expected_sound_bytes_per_frame);
+            expected_bytes_until_flip := cast(s32)((seconds_left_until_flip / target_seconds_per_frame) * cast(float) expected_sound_bytes_per_frame);
 
             expected_frame_boundary_byte := play_cursor + expected_bytes_until_flip;
 
@@ -964,7 +976,7 @@ main :: () {
 
             wrapped_around := play_cursor > write_cursor;
             audio_latency_bytes = ifx wrapped_around then write_cursor + SOUND_BUFFER_SIZE - play_cursor else write_cursor - play_cursor;
-            audio_latency_sec = (cast(float32)audio_latency_bytes / cast(float32)BYTES_PER_SAMPLE / cast(float32)SAMPLE_RATE);
+            audio_latency_sec = (cast(float)audio_latency_bytes / cast(float)BYTES_PER_SAMPLE / cast(float)SAMPLE_RATE);
 
 #if false {
             win32_debug(
