@@ -6,11 +6,6 @@ MEGABYTES :: (v: $T) -> T #expand { return KILOBYTES(v) * 1024; }
 GIGABYTES :: (v: $T) -> T #expand { return MEGABYTES(v) * 1024; }
 TERABYTES :: (v: $T) -> T #expand { return GIGABYTES(v) * 1024; }
 
-Game_State :: struct {
-    player_x: float;
-    player_y: float;
-}
-
 Game_Memory :: struct {
     permanent         : []u8;
     temporary         : []u8;
@@ -77,22 +72,52 @@ Game_Input :: struct {
     controllers   : [MAX_INPUTS]Game_Controller_Input;
 }
 
-Tile_Map :: struct {
-    count_x      : u32;
-    count_y      : u32;
-    upper_left_x : float;
-    upper_left_y : float;
-    tile_height  : float;
-    tile_width   : float;
+//
+//  Game state
+//
 
+Tile_Map :: struct {
     tiles        : []u32;
 }
 
 World :: struct {
-    // TODO: beginner's sparseness
-    count_x: u32;
-    count_y: u32;
-    tile_maps: *Tile_Map;
+    world_count_x : s32;
+    world_count_y : s32;
+
+    tile_count_x  : s32;
+    tile_count_y  : s32;
+    upper_left_x  : float;
+    upper_left_y  : float;
+    tile_height   : float;
+    tile_width    : float;
+
+    tile_maps     : *Tile_Map;
+}
+
+Game_State :: struct {
+    player_tile_map_x : s32;
+    player_tile_map_y : s32;
+    player_x          : float;
+    player_y          : float;
+}
+
+Canonical_Position :: struct {
+    tile_map_x : s32;
+    tile_map_y : s32;
+    tile_x     : s32;
+    tile_y     : s32;
+    // NOTE: this is tile-relative x and y.
+    tile_rel_x : float;
+    tile_rel_y : float;
+}
+
+Raw_Position :: struct {
+    tile_map_x : s32;
+    tile_map_y : s32;
+
+    // NOTE: this is tile-map relative x and y.
+    x          : float;
+    y          : float;
 }
 
 //
