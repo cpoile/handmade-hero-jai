@@ -81,17 +81,17 @@ Tile_Map :: struct {
 }
 
 World :: struct {
-    world_count_x : s32;
-    world_count_y : s32;
+    tile_side_in_meters : float;
+    tile_side_in_pixels : s32;
+    world_count_x       : s32;
+    world_count_y       : s32;
 
-    tile_count_x  : s32;
-    tile_count_y  : s32;
-    upper_left_x  : float;
-    upper_left_y  : float;
-    tile_height   : float;
-    tile_width    : float;
+    tile_count_x        : s32;
+    tile_count_y        : s32;
+    upper_left_x        : float;
+    upper_left_y        : float;
 
-    tile_maps     : *Tile_Map;
+    tile_maps           : *Tile_Map;
 }
 
 Game_State :: struct {

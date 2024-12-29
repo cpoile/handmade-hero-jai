@@ -64,13 +64,6 @@ draw_rectangle :: (buffer: *Game_Offscreen_Buffer,
     }
 }
 
-round_s32 :: inline (x: float) -> s32 {
-    return cast,trunc(s32)(x + 0.5);
-}
-round_u32 :: inline (x: float) -> u32 {
-    return cast,trunc(u32)(x + 0.5);
-}
-
 // NOTE: at the moment this has to be a very fast function, it cannot be more than a ms or so.
 #program_export
 game_get_sound_samples :: (game_memory: *Game_Memory, sound_buffer: *Game_Sound_Buffer) {
@@ -111,10 +104,10 @@ get_canonical_position :: (world: *World, pos: Raw_Position) -> Canonical_Positi
 
     x := pos.x - world.upper_left_x;
     y := pos.y - world.upper_left_y;
-    res.tile_x = cast(s32)floor((pos.x - world.upper_left_x)/world.tile_width);
-    res.tile_y = cast(s32)floor((pos.y - world.upper_left_y)/world.tile_height);
-    res.tile_rel_x = x - res.tile_x * world.tile_width;
-    res.tile_rel_y = y - res.tile_y * world.tile_height;
+    res.tile_x = floor_float_to_s32((pos.x - world.upper_left_x)/world.tile_side_in_pixels);
+    res.tile_y = floor_float_to_s32((pos.y - world.upper_left_y)/world.tile_side_in_pixels);
+    res.tile_rel_x = x - res.tile_x *  world.tile_side_in_pixels;
+    res.tile_rel_y = y - res.tile_y * world.tile_side_in_pixels;
 
     if res.tile_x < 0 {
         res.tile_x = world.tile_count_x + res.tile_x;
@@ -236,16 +229,16 @@ game_update_and_render :: (
     };
 
     world := World.{
+        tile_side_in_meters = 1.4,
+        tile_side_in_pixels = 60,
         world_count_x = 2,
         world_count_y = 2,
         tile_count_x  = TILE_COUNT_X,
         tile_count_y  = TILE_COUNT_Y,
-        upper_left_x  = -30,
         upper_left_y  = 0,
-        tile_height   = 60,
-        tile_width    = 60,
         tile_maps     = cast(*Tile_Map)tile_maps.data,
     };
+    world.upper_left_x = cast(float)-world.tile_side_in_pixels/2;
 
     state := cast(*Game_State)game_memory.permanent.data;
     if !game_memory.initialized {
@@ -259,8 +252,8 @@ game_update_and_render :: (
     map := get_tile_map(*world, state.player_tile_map_x, state.player_tile_map_y);
     assert(map != null);
 
-    player_width := .6 * world.tile_width;
-    player_height := .75 * world.tile_height;
+    player_width := .75 * world.tile_side_in_pixels;
+    player_height := world.tile_side_in_pixels;
 
     for controller: input.controllers {
         if controller.analog {
@@ -301,8 +294,8 @@ game_update_and_render :: (
                 state.player_tile_map_x = pos_can.tile_map_x;
                 state.player_tile_map_y = pos_can.tile_map_y;
 
-                state.player_x = world.upper_left_x + pos_can.tile_x * world.tile_width + pos_can.tile_rel_x;
-                state.player_y = world.upper_left_y + pos_can.tile_y * world.tile_height + pos_can.tile_rel_y;
+                state.player_x = world.upper_left_x + pos_can.tile_x * world.tile_side_in_pixels + pos_can.tile_rel_x;
+                state.player_y = world.upper_left_y + pos_can.tile_y * world.tile_side_in_pixels + pos_can.tile_rel_y;
             }
         }
     }
@@ -313,10 +306,10 @@ game_update_and_render :: (
         for x: 0..world.tile_count_x-1 {
             tile := get_tile_value_unchecked(*world, map, x, y);
             gray := ifx tile == 1  1.0 else .5;
-            min_x := world.upper_left_x + x*world.tile_width;
-            min_y := world.upper_left_y + y*world.tile_height;
-            max_x := min_x + world.tile_width;
-            max_y := min_y + world.tile_height;
+            min_x := world.upper_left_x + x*world.tile_side_in_pixels;
+            min_y := world.upper_left_y + y*world.tile_side_in_pixels;
+            max_x := min_x + world.tile_side_in_pixels;
+            max_y := min_y + world.tile_side_in_pixels;
             draw_rectangle(buffer, min_x, min_y, max_x, max_y, gray, gray, gray);
         }
     }
@@ -333,9 +326,9 @@ game_update_and_render :: (
 }
 
 #load "handmade_h.jai";
+#load "handmade_intrinsics.jai";
 
 #import "Basic";
-#import "Math";
 
 /*
 render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer, xOffset: int, yOffset: int) {
