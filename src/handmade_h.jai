@@ -83,6 +83,7 @@ Tile_Map :: struct {
 World :: struct {
     tile_side_in_meters : float;
     tile_side_in_pixels : s32;
+    meters_to_pixels    : float;
     world_count_x       : s32;
     world_count_y       : s32;
 
@@ -95,10 +96,7 @@ World :: struct {
 }
 
 Game_State :: struct {
-    player_tile_map_x : s32;
-    player_tile_map_y : s32;
-    player_x          : float;
-    player_y          : float;
+    player_p : Canonical_Position;
 }
 
 Canonical_Position :: struct {

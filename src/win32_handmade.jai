@@ -581,8 +581,8 @@ win32_playback_input :: (state: *Win32_State, new_input: *Game_Input) {
 }
 
 create_window :: (width: int, height: int, name: string) -> HWND {
-    window_x : int = 200;
-    window_y : int = 400;
+    window_x : int = 1100;
+    window_y : int = 100;
 
     hInstance := GetModuleHandleW(null);
 
