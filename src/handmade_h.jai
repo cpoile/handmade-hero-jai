@@ -76,35 +76,40 @@ Game_Input :: struct {
 //  Game state
 //
 
-Tile_Map :: struct {
+Tile_Chunk :: struct {
     tiles        : []u32;
 }
 
 World :: struct {
+    // NOTE             : this is set to be using 256x256 tile chunks
+    chunk_shift         : u32;
+    chunk_mask          : u32;
+    chunk_dim           : u32;
     tile_side_in_meters : float;
-    tile_side_in_pixels : s32;
+    tile_side_in_pixels : u32;
     meters_to_pixels    : float;
-    world_count_x       : s32;
-    world_count_y       : s32;
 
-    tile_count_x        : s32;
-    tile_count_y        : s32;
-    upper_left_x        : float;
-    upper_left_y        : float;
+    tile_chunk_count_x  : u32;
+    tile_chunk_count_y  : u32;
 
-    tile_maps           : *Tile_Map;
+    tile_chunks           : *Tile_Chunk;
 }
 
 Game_State :: struct {
-    player_p : Canonical_Position;
+    player_p : World_Position;
 }
 
-Canonical_Position :: struct {
-    tile_map_x : s32;
-    tile_map_y : s32;
-    tile_x     : s32;
-    tile_y     : s32;
-    // NOTE: this is tile-relative x and y.
+Tile_Chunk_Position :: struct {
+    tile_chunk_x : u32;
+    tile_chunk_y : u32;
+    rel_tile_x   : u32;
+    rel_tile_y   : u32;
+}
+
+World_Position :: struct {
+    abs_tile_x : u32;
+    abs_tile_y : u32;
+
     tile_rel_x : float;
     tile_rel_y : float;
 }
