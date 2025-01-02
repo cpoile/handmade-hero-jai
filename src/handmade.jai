@@ -1,5 +1,32 @@
 // Platform-independent game code
 
+//
+//  Game state
+//
+
+Memory_Arena :: struct {
+    memory : []u8;
+    free   : []u8;
+}
+
+World :: struct {
+     tile_map : *Tile_Map;
+}
+
+Game_State :: struct {
+    world_arena : Memory_Arena;
+    world       : *World;
+    player_p    : Tile_Map_Position;
+}
+
+Raw_Position :: struct {
+    tile_map_x : s32;
+    tile_map_y : s32;
+
+    // NOTE: this is tile-map relative x and y.
+    x          : float;
+    y          : float;
+}
 
 game_sound_output :: (sound_buffer: *Game_Sound_Buffer) {
     //tone_volume := 3000;
@@ -73,78 +100,23 @@ game_get_sound_samples :: (game_memory: *Game_Memory, sound_buffer: *Game_Sound_
     game_sound_output(sound_buffer);
 }
 
-get_tile_chunk :: (world: *World, tile_chunk_x: u32, tile_chunk_y: u32) -> Tile_Chunk {
-    if tile_chunk_x >= 0 && tile_chunk_x < world.tile_chunk_count_x &&
-        tile_chunk_y >= 0 && tile_chunk_y < world.tile_chunk_count_y
-    {
-        return Tile_Chunk.{.{
-            count = world.chunk_dim * world.chunk_dim,
-            data = *world.tile_chunks.tiles[tile_chunk_y * world.tile_chunk_count_x + tile_chunk_x],
-        }};
-    }
-    return .{};
+initialize_arena :: (arena: *Memory_Arena, memory: []u8) {
+    arena.memory = memory;
+    arena.free   = memory;
+};
+
+push_size :: (arena: *Memory_Arena, $T: Type) -> *T {
+    assert(arena.free.count >= size_of(T));
+    result := arena.free.data;
+    arena.free = array_view(arena.free, size_of(T));
+    return cast(*T)result;
 }
 
-get_tile_value_unchecked :: (world: *World, tile_chunk: *Tile_Chunk, tile_x: u32, tile_y: u32) -> u32 {
-    assert(tile_chunk != null);
-    assert(tile_y < world.chunk_dim);
-    assert(tile_x < world.chunk_dim);
-
-    tile_chunk_value := tile_chunk.tiles[tile_y * world.chunk_dim + tile_x];
-    return tile_chunk_value;
-}
-
-get_tile_value :: (world: *World, tile_chunk: *Tile_Chunk, test_tile_x: u32, test_tile_y: u32) -> u32 {
-    tile_chunk_value : u32 = 0;
-    if tile_chunk.tiles {
-        tile_chunk_value = get_tile_value_unchecked(world, tile_chunk, test_tile_x, test_tile_y);
-    }
-    return tile_chunk_value;
-}
-
-re_canonicalize_coord :: (world: *World, tile: *u32, tile_rel: *float) {
-    // NOTE: world is toroidal
-    offset := floor_float_to_s32(tile_rel.* / world.tile_side_in_meters);
-    new_tile := cast(s32)tile.*;  // because we can't add/subtract s32 from u32
-    new_tile += offset;
-    tile.* = cast(u32)new_tile;
-    tile_rel.* -= offset * world.tile_side_in_meters;
-
-    assert(tile_rel.* >= 0);
-    assert(tile_rel.* <= world.tile_side_in_meters);
-}
-
-
-re_canonicalize_position :: (world: *World, pos: World_Position) -> World_Position {
-    res := pos;
-
-    re_canonicalize_coord(world, *res.abs_tile_x, *res.tile_rel_x);
-    re_canonicalize_coord(world, *res.abs_tile_y, *res.tile_rel_y);
-
-    return res;
-}
-
-get_chunk_pos_for :: (world: *World, abs_tile_x: u32, abs_tile_y: u32) -> Tile_Chunk_Position {
-    res: Tile_Chunk_Position;
-    res.tile_chunk_x = abs_tile_x >> world.chunk_shift;
-    res.tile_chunk_y = abs_tile_y >> world.chunk_shift;
-    res.rel_tile_x = abs_tile_x & world.chunk_mask;
-    res.rel_tile_y = abs_tile_y & world.chunk_mask;
-    return res;
-}
-
-get_tile_value :: (world: *World, abs_tile_x: u32, abs_tile_y: u32) -> u32 {
-    chunk_pos := get_chunk_pos_for(world, abs_tile_x, abs_tile_y);
-    tile_map := get_tile_chunk(world, chunk_pos.tile_chunk_x, chunk_pos.tile_chunk_y);
-    tile := get_tile_value(world, *tile_map, chunk_pos.rel_tile_x, chunk_pos.rel_tile_y);
-
-    return tile;
-}
-
-is_world_point_empty :: (world: *World, can_pos: World_Position) -> bool {
-    tile_chunk_value := get_tile_value(world, can_pos.abs_tile_x, can_pos.abs_tile_y);
-
-    return tile_chunk_value == 0;
+push_array :: (arena: *Memory_Arena, $T: Type, $N: s64) -> []T {
+    assert(arena.free.count >= size_of(T)*N);
+    result := arena.free.data;
+    arena.free = array_view(arena.free, size_of(T)*N);
+    return cast([N]T)result;
 }
 
 // NOTE: may expand in the future
@@ -163,76 +135,68 @@ game_update_and_render :: (
         assert((*input.controllers[0].terminator - *input.controllers[0].up) == input.controllers[0].buttons.count);
     }
 
-    TILE_COUNT_X :: 256;
-    TILE_COUNT_Y :: 256;
-
-    //#load "tile_map.jai";
-    //tiles := get_tile_map();
-
-    filled_in_tile_map : [][]u32 = .[
-        .[1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1, 1],
-        .[1, 1, 0, 0,  0, 1, 0, 0,  0, 0, 0, 0,  0, 1, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 1, 0, 0,  0, 0, 0, 0,  1, 0, 0, 0,  0, 0, 1, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 0, 0, 0,  0, 0, 0, 0,  1, 0, 0, 0,  0, 0, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 0, 0, 0,  0, 1, 0, 0,  1, 0, 0, 0,  0, 0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 1, 0, 0,  0, 1, 0, 0,  1, 0, 0, 0,  0, 1, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 0, 0, 0,  0, 1, 0, 0,  1, 0, 0, 0,  1, 0, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 1, 1, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 1, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 1, 1, 1,  1, 1, 1, 1,  0, 1, 1, 1,  1, 1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  0, 1, 1, 1,  1, 1, 1, 1, 1],
-        .[1, 1, 1, 1,  1, 1, 1, 1,  0, 1, 1, 1,  1, 1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  0, 1, 1, 1,  1, 1, 1, 1, 1],
-        .[1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0, 1],
-        .[1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1, 1],
-    ];
-
-    // we want the non filled-in-tiles to be zero
-    tiles : [TILE_COUNT_Y][TILE_COUNT_X]u32;
-
-    // now fill in what we have  (could do a memcpy, but this is probably almost as fast)
-    for row: filled_in_tile_map {
-        row_index := it_index;
-        for row {
-            tiles[row_index][it_index] = it;
-        }
-    }
-
-    tile_chunk := Tile_Chunk.{.{
-        count    = TILE_COUNT_X * TILE_COUNT_Y,
-        data     = cast(*u32)tiles.data,
-    }};
-
-    world := World.{
-        tile_side_in_meters = 1.4,
-        tile_side_in_pixels = 60,
-        tile_chunk_count_x  = 1,
-        tile_chunk_count_y  = 1,
-        tile_chunks         = *tile_chunk,
-    };
-    world.meters_to_pixels = cast(float)world.tile_side_in_pixels / cast(float)world.tile_side_in_meters;
-    world.chunk_shift = 8;
-    world.chunk_mask = cast(u32)((1 << world.chunk_shift) - 1);
-    world.chunk_dim = 256;
-
-    player_height := world.tile_side_in_meters;
-    player_width := .75 * player_height;
-
-    lower_left_x := -cast(float)world.tile_side_in_pixels/2;
-    lower_left_y := cast(float)buffer.height;
+    CHUNK_SHIFT        :: 4;
+    CHUNK_DIM          :: 1 << 4;
+    TILE_CHUNK_COUNT_X :: 128;
+    TILE_CHUNK_COUNT_Y :: 128;
 
     state := cast(*Game_State)game_memory.permanent.data;
     if !game_memory.initialized {
-        state.player_p.abs_tile_x = 3;
+        state.player_p.abs_tile_x = 2;
         state.player_p.abs_tile_y = 3;
         state.player_p.tile_rel_x = 5;
         state.player_p.tile_rel_y = 5;
+        initialize_arena(*state.world_arena, array_view(game_memory.permanent, size_of(Game_State)));
+
+        //state.world := World.{*tile_map};
+        state.world = push_size(*state.world_arena, World);
+        world := state.world;
+        world.tile_map = push_size(*state.world_arena, Tile_Map);
+        tile_map := world.tile_map;
+        tile_map.chunk_shift = CHUNK_SHIFT;
+        tile_map.chunk_mask = cast,trunc(u32)((1 << tile_map.chunk_shift) - 1);
+        tile_map.chunk_dim = cast,trunc(u32)(1 << tile_map.chunk_shift);
+        tile_map.tile_chunk_count_x  = TILE_CHUNK_COUNT_X;
+        tile_map.tile_chunk_count_y  = TILE_CHUNK_COUNT_Y;
+
+        tile_map.tile_chunks = push_array(*state.world_arena, Tile_Chunk, TILE_CHUNK_COUNT_X * TILE_CHUNK_COUNT_Y);
+
+        for y: 0..tile_map.tile_chunk_count_x-1 {
+            for x: 0..tile_map.tile_chunk_count_y-1 {
+                tile_map.tile_chunks[y * tile_map.tile_chunk_count_x + x] = push_array(*state.world_arena, u32, CHUNK_DIM * CHUNK_DIM);
+            }
+        }
+
+        tile_map.tile_side_in_meters = 1.4;
+        tile_map.tile_side_in_pixels = 60;
+        tile_map.meters_to_pixels = cast(float)tile_map.tile_side_in_pixels / cast(float)tile_map.tile_side_in_meters;
+
+        lower_left_x := -cast(float)tile_map.tile_side_in_pixels/2;
+        lower_left_y := cast(float)buffer.height;
+
+        tiles_per_width : u32 = 17;
+        tiles_per_height : u32 = 9;
+        for screen_y: 0..cast(u32)31 {
+            for screen_x: 0..cast(u32)31 {
+                for tile_y: 0..tiles_per_height-1 {
+                    for tile_x: 0..tiles_per_width-1 {
+                        abs_tile_x := screen_x * tiles_per_width + tile_x;
+                        abs_tile_y := screen_y * tiles_per_height + tile_y;
+                        set_tile_value(*state.world_arena, world.tile_map, abs_tile_x, abs_tile_y,
+                                       ifx tile_x == tile_y && (tile_x % 2) then cast(u32)1 else cast(u32)0);
+                    }
+                }
+            }
+        }
 
         game_memory.initialized = true;
     }
+
+    world := state.world;
+    tile_map := world.tile_map;
+
+    player_height := tile_map.tile_side_in_meters;
+    player_width := .75 * player_height;
 
     for controller: input.controllers {
         if controller.analog {
@@ -261,19 +225,19 @@ game_update_and_render :: (
             d_player_y *= 8;  // speed him up
 
             new_player_p := state.player_p;
-            new_player_p.tile_rel_x += input.dt_for_frame * d_player_x;
+            new_player_p.tile_rel_x  += input.dt_for_frame * d_player_x;
             new_player_p.tile_rel_y += input.dt_for_frame * d_player_y;
-            new_player_p = re_canonicalize_position(*world, new_player_p);
+            new_player_p = re_canonicalize_position(tile_map, new_player_p);
 
             player_left := new_player_p;
             player_left.tile_rel_x -= 0.5*player_width;
-            player_left = re_canonicalize_position(*world, player_left);
+            player_left = re_canonicalize_position(tile_map, player_left);
 
             player_right := new_player_p;
             player_right.tile_rel_x += 0.5*player_width;
-            player_right = re_canonicalize_position(*world, player_right);
+            player_right = re_canonicalize_position(tile_map, player_right);
 
-            if is_world_point_empty(*world, player_left) && is_world_point_empty(*world, player_right) {
+            if is_tile_map_point_empty(tile_map, player_left) && is_tile_map_point_empty(tile_map, player_right) {
                 state.player_p = new_player_p;
             }
         }
@@ -281,42 +245,47 @@ game_update_and_render :: (
 
     draw_rectangle(buffer, 0, 0, cast(float)buffer.width, cast(float)buffer.height, 1, 0, 1);
 
-    center_x := 0.5 * cast(float)buffer.width;
-    center_y := 0.5 * cast(float)buffer.height;
+    screen_center_x := 0.5 * cast(float)buffer.width;
+    screen_center_y := 0.5 * cast(float)buffer.height;
 
     // DRAW MAP
     for rel_row: -10..9 {
         for rel_col: -20..19 {
-            col : u32 = cast,trunc(u32)(cast(s32)state.player_p.abs_tile_x + rel_col);
-            row : u32 = cast,trunc(u32)(cast(s32)state.player_p.abs_tile_y + rel_row);
-            tile_id := get_tile_value(*world, col, row);
+            col : u32 = cast,trunc(u32)(cast(s64)state.player_p.abs_tile_x + rel_col);
+            row : u32 = cast,trunc(u32)(cast(s64)state.player_p.abs_tile_y + rel_row);
+            tile_id := get_tile_value(tile_map, col, row);
 
             gray := ifx tile_id == 1  1.0 else .5;
             gray  = ifx state.player_p.abs_tile_x == col && state.player_p.abs_tile_y == row  0 else gray;
 
-            min_x := center_x + rel_col * cast(float)world.tile_side_in_pixels;
-            min_y := center_y - rel_row * cast(float)world.tile_side_in_pixels;
-            max_x := min_x + world.tile_side_in_pixels;
-            max_y := min_y - world.tile_side_in_pixels;
-            draw_rectangle(buffer, min_x, max_y, max_x, min_y, gray, gray, gray);
+            cen_x := screen_center_x - tile_map.meters_to_pixels * state.player_p.tile_rel_x +
+                rel_col * cast(float)tile_map.tile_side_in_pixels;
+            cen_y := screen_center_y + tile_map.meters_to_pixels * state.player_p.tile_rel_y -
+                rel_row * cast(float)tile_map.tile_side_in_pixels;
+            min_x := cen_x - 0.5 * cast(float)tile_map.tile_side_in_pixels;
+            min_y := cen_y - 0.5 * cast(float)tile_map.tile_side_in_pixels;
+            max_x := cen_x + 0.5 * cast(float)tile_map.tile_side_in_pixels;
+            max_y := cen_y + 0.5 * cast(float)tile_map.tile_side_in_pixels;
+            draw_rectangle(buffer, min_x, min_y, max_x, max_y, gray, gray, gray);
         }
     }
 
     // DRAW PLAYER
     player_r, player_g, player_b := 1.0, 1.0, 0.0;
 
-    player_left := center_x + world.meters_to_pixels * state.player_p.tile_rel_x - .5 * world.meters_to_pixels * player_width;
-    player_top  := center_y - world.meters_to_pixels * state.player_p.tile_rel_y - world.meters_to_pixels * player_height;
+    player_left := screen_center_x - .5 * tile_map.meters_to_pixels * player_width;
+    player_top  := screen_center_y - tile_map.meters_to_pixels * player_height;
     draw_rectangle(buffer,
                    player_left, player_top,
-                   player_left + world.meters_to_pixels * player_width,
-                   player_top + world.meters_to_pixels * player_height,
+                   player_left + tile_map.meters_to_pixels * player_width,
+                   player_top + tile_map.meters_to_pixels * player_height,
                    player_r, player_g, player_b);
 
     return true;
 }
 
 #load "handmade_h.jai";
+#load "handmade_tile.jai";
 #load "handmade_intrinsics.jai";
 
 #import "Basic";

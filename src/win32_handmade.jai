@@ -86,7 +86,7 @@ win32_get_last_write_time :: (filename: string) -> FILETIME {
     ret := FILETIME.{};
     find_data: WIN32_FIND_DATAW;
     full_filename := join(global_base_path, filename,, temp);
-    full_wide_name := U.utf8_to_wide_new(full_filename,, temp);
+    full_wide_name := U.utf8_to_wide(full_filename,, temp);
 
     find_handle := FindFirstFileW(full_wide_name, *find_data);
     if find_handle != INVALID_HANDLE_VALUE {
@@ -105,8 +105,8 @@ win32_load_game_code :: (filename: string) -> Win32_Game_Code {
     ret := Win32_Game_Code.{};
     ret.last_write_time = win32_get_last_write_time(filename);
 
-    source_dll_wide_name := U.utf8_to_wide_new(dll_filename,, temp);
-    tmp_dll_wide_name := U.utf8_to_wide_new(temp_dll_filename,, temp);
+    source_dll_wide_name := U.utf8_to_wide(dll_filename,, temp);
+    tmp_dll_wide_name := U.utf8_to_wide(temp_dll_filename,, temp);
 
     success := CopyFileW(source_dll_wide_name, tmp_dll_wide_name, 0);
     if !success {
@@ -148,7 +148,7 @@ win32_unload_game_code :: (game_code: *Win32_Game_Code) -> bool {
     //  They are blocking and the write doesn't protect against lost data!
 
     DEBUG_platform_read_entire_file :: (filename: string) -> memory: []u8, ok: bool {
-        fh := CreateFileW(U.utf8_to_wide_new(filename,, temp), GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
+        fh := CreateFileW(U.utf8_to_wide(filename,, temp), GENERIC_READ, FILE_SHARE_READ, null, OPEN_EXISTING, 0, null);
 
         if !fh return .{}, false;
 
@@ -186,7 +186,7 @@ win32_unload_game_code :: (game_code: *Win32_Game_Code) -> bool {
         memory.count = 0;
     }
     DEBUG_platform_write_entire_file :: (filename: string, memory: []u8) -> bool {
-        fh := CreateFileW(U.utf8_to_wide_new(filename,, temp), GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
+        fh := CreateFileW(U.utf8_to_wide(filename,, temp), GENERIC_WRITE, FILE_SHARE_WRITE, null, CREATE_ALWAYS, 0, null);
 
         if !fh {return false;}
 
@@ -390,7 +390,7 @@ win32_process_xinput_digital_button :: (
 // #add_context _windows_windowproc_allocator: Allocator;
 
 win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LParam: LPARAM) -> LRESULT #c_call {
-    new_context: Context;
+    new_context: #Context;
 
     push_context new_context {
         result : LRESULT = 0;
@@ -517,7 +517,7 @@ win32_get_seconds_elapsed :: inline (start: s64, end: s64) -> float {
 
 win32_build_input_file_name :: (input_stream: bool, slot_index: int) -> *u16 {
     filename := sprint("input_recording_%_%.hmi", slot_index, ifx input_stream "input" else "state",, temp);
-    return U.utf8_to_wide_new(join(global_base_path, filename,, temp),, temp);
+    return U.utf8_to_wide(join(global_base_path, filename,, temp),, temp);
 }
 
 win32_get_replay_buffer :: (state: *Win32_State, input_recording_index: int) -> Win32_Replay_Buffer {
@@ -609,7 +609,7 @@ create_window :: (width: int, height: int, name: string) -> HWND {
     window_class.hCursor       = LoadCursorW(null, IDC_ARROW);
     window_class.hbrBackground = cast(HBRUSH) GetStockObject(BLACK_BRUSH);
     window_class.lpszMenuName  = null;
-    window_class.lpszClassName = U.utf8_to_wide_new("HandmadeHeroWindowClass",, temp);
+    window_class.lpszClassName = U.utf8_to_wide("HandmadeHeroWindowClass",, temp);
 
     if RegisterClassExW(*window_class) == 0 {
         win32_error("RegisterClassExW returned 0.\n");
@@ -637,7 +637,7 @@ create_window :: (width: int, height: int, name: string) -> HWND {
     }
     hwnd := CreateWindowExW(FLAGS,
                            window_class.lpszClassName,
-                           U.utf8_to_wide_new("Oh my, Handmade Hero",, temp),
+                           U.utf8_to_wide("Oh my, Handmade Hero",, temp),
                            style,
                            xx window_x, xx window_y,
                            xx client_width, xx client_height,

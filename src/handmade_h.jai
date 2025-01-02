@@ -73,57 +73,6 @@ Game_Input :: struct {
 }
 
 //
-//  Game state
-//
-
-Tile_Chunk :: struct {
-    tiles        : []u32;
-}
-
-World :: struct {
-    // NOTE             : this is set to be using 256x256 tile chunks
-    chunk_shift         : u32;
-    chunk_mask          : u32;
-    chunk_dim           : u32;
-    tile_side_in_meters : float;
-    tile_side_in_pixels : u32;
-    meters_to_pixels    : float;
-
-    tile_chunk_count_x  : u32;
-    tile_chunk_count_y  : u32;
-
-    tile_chunks           : *Tile_Chunk;
-}
-
-Game_State :: struct {
-    player_p : World_Position;
-}
-
-Tile_Chunk_Position :: struct {
-    tile_chunk_x : u32;
-    tile_chunk_y : u32;
-    rel_tile_x   : u32;
-    rel_tile_y   : u32;
-}
-
-World_Position :: struct {
-    abs_tile_x : u32;
-    abs_tile_y : u32;
-
-    tile_rel_x : float;
-    tile_rel_y : float;
-}
-
-Raw_Position :: struct {
-    tile_map_x : s32;
-    tile_map_y : s32;
-
-    // NOTE: this is tile-map relative x and y.
-    x          : float;
-    y          : float;
-}
-
-//
 // Functions the dll provides
 //
 Game_Update_And_Render :: #type (*Game_Memory, *Game_Input, *Game_Offscreen_Buffer) -> bool;
@@ -135,3 +84,4 @@ Game_Get_Sound_Samples :: #type (*Game_Memory, *Game_Sound_Buffer);
 DEBUG_Platform_Read_Entire_File  :: #type (filename: string) -> memory: []u8, ok: bool;
 DEBUG_Platform_Free_File_Memory  :: #type (memory: *[]u8);
 DEBUG_Platform_Write_Entire_File :: #type (filename: string, memory: []u8) -> bool;
+
