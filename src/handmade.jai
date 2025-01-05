@@ -1,5 +1,8 @@
 // Platform-independent game code
 
+CHUNK_SHIFT        :: 4;
+CHUNK_DIM          :: 1 << 4;
+
 //
 //  Game state
 //
@@ -17,6 +20,7 @@ Game_State :: struct {
     world_arena : Memory_Arena;
     world       : *World;
     player_p    : Tile_Map_Position;
+    super_speed : bool;
 }
 
 Raw_Position :: struct {
@@ -128,6 +132,12 @@ game_update_and_render :: (
     input: *Game_Input,
     buffer: *Game_Offscreen_Buffer
 ) -> bool {
+
+    // for dev, be deterministic
+    // millis := to_milliseconds(current_time_consensus());
+    //random_seed(cast(u64)millis);
+    random_seed(1233445);
+
     empty := false;
     assert(game_memory != null);
     #if HANDMADE_DEBUG {
@@ -135,10 +145,14 @@ game_update_and_render :: (
         assert((*input.controllers[0].terminator - *input.controllers[0].up) == input.controllers[0].buttons.count);
     }
 
-    CHUNK_SHIFT        :: 4;
-    CHUNK_DIM          :: 1 << 4;
-    TILE_CHUNK_COUNT_X :: 128;
-    TILE_CHUNK_COUNT_Y :: 128;
+    TILE_CHUNK_COUNT_X  :: 128;
+    TILE_CHUNK_COUNT_Y  :: 128;
+    TILE_CHUNK_COUNT_Z   :: 128;
+
+    TILE_SIDE_IN_METERS :: 1.4;
+    TILE_SIDE_IN_PIXELS :: 10.0;
+    METERS_TO_PIXELS    :: TILE_SIDE_IN_PIXELS / TILE_SIDE_IN_METERS;
+
 
     state := cast(*Game_State)game_memory.permanent.data;
     if !game_memory.initialized {
@@ -158,34 +172,99 @@ game_update_and_render :: (
         tile_map.chunk_dim = cast,trunc(u32)(1 << tile_map.chunk_shift);
         tile_map.tile_chunk_count_x  = TILE_CHUNK_COUNT_X;
         tile_map.tile_chunk_count_y  = TILE_CHUNK_COUNT_Y;
+        tile_map.tile_chunk_count_z  = TILE_CHUNK_COUNT_Z;
+        tile_map.tile_side_in_meters = TILE_SIDE_IN_METERS;
 
-        tile_map.tile_chunks = push_array(*state.world_arena, Tile_Chunk, TILE_CHUNK_COUNT_X * TILE_CHUNK_COUNT_Y);
+        tile_map.tile_chunks = push_array(*state.world_arena, Tile_Chunk,
+                                          TILE_CHUNK_COUNT_X * TILE_CHUNK_COUNT_Y * TILE_CHUNK_COUNT_Z);
 
-        for y: 0..tile_map.tile_chunk_count_x-1 {
-            for x: 0..tile_map.tile_chunk_count_y-1 {
-                tile_map.tile_chunks[y * tile_map.tile_chunk_count_x + x] = push_array(*state.world_arena, u32, CHUNK_DIM * CHUNK_DIM);
-            }
-        }
-
-        tile_map.tile_side_in_meters = 1.4;
-        tile_map.tile_side_in_pixels = 60;
-        tile_map.meters_to_pixels = cast(float)tile_map.tile_side_in_pixels / cast(float)tile_map.tile_side_in_meters;
-
-        lower_left_x := -cast(float)tile_map.tile_side_in_pixels/2;
+        lower_left_x := -TILE_SIDE_IN_PIXELS/2;
         lower_left_y := cast(float)buffer.height;
 
         tiles_per_width : u32 = 17;
         tiles_per_height : u32 = 9;
-        for screen_y: 0..cast(u32)31 {
-            for screen_x: 0..cast(u32)31 {
-                for tile_y: 0..tiles_per_height-1 {
-                    for tile_x: 0..tiles_per_width-1 {
-                        abs_tile_x := screen_x * tiles_per_width + tile_x;
-                        abs_tile_y := screen_y * tiles_per_height + tile_y;
-                        set_tile_value(*state.world_arena, world.tile_map, abs_tile_x, abs_tile_y,
-                                       ifx tile_x == tile_y && (tile_x % 2) then cast(u32)1 else cast(u32)0);
+        screen_x, screen_y : u32 = 0, 0;
+        // TODO: temp
+        abs_tile_z : u32 = 0;
+
+        //
+        // CREATE MAP
+        //
+        door_left   := false;
+        door_right  := false;
+        door_top    := false;
+        door_bottom := false;
+        door_up     := false;
+        door_down   := false;
+        random_choice : u64 = 0;
+
+        for screen_idx: 0..99 {
+            if door_up || door_down {
+                // previously we had gone up or down, next move has to be lateral
+                random_choice = random_get() % 2;
+            } else {
+                random_choice = random_get() % 3;
+            }
+
+            if random_choice == 2 {
+                if abs_tile_z == 0 then door_up = true; else door_down = true;
+            } else if random_choice == 1 {
+                door_right = true;
+            } else {
+                door_top = true;
+            }
+
+
+            for tile_y: 0..tiles_per_height-1 {
+                for tile_x: 0..tiles_per_width-1 {
+                    abs_tile_x := screen_x * tiles_per_width + tile_x;
+                    abs_tile_y := screen_y * tiles_per_height + tile_y;
+                    tile_value : u32 = 1;
+
+                    if tile_x == 0  { // left edge
+                        tile_value = xx ifx tile_y == tiles_per_height/2 && door_left  1 else 2;
                     }
+                    if tile_x == (tiles_per_width - 1) { // right edge
+                        tile_value = xx ifx tile_y == tiles_per_height/2 && door_right  1 else 2;
+                    }
+                    if tile_y == 0  { // bottom edge
+                        tile_value = xx ifx tile_x == tiles_per_width/2 && door_bottom  1 else 2;
+                    }
+                    if tile_y == (tiles_per_height - 1) { // top edge
+                        tile_value = xx ifx tile_x == tiles_per_width/2 && door_top  1 else 2;
+                    }
+                    if tile_x == 10 && tile_y == 5 {
+                        if door_up {
+                            tile_value = 3;
+                        } else if door_down {
+                            tile_value = 4;
+                        }
+                    }
+                    set_tile_value(*state.world_arena, world.tile_map, abs_tile_x, abs_tile_y, abs_tile_z, tile_value);
                 }
+            }
+
+            door_left   = door_right;
+            door_bottom = door_top;
+            door_right  = false;
+            door_top    = false;
+            if door_up {
+                door_down = true;
+                door_up   = false;
+            } else if door_down {
+                door_down = false;
+                door_up   = true;
+            } else {
+                door_down = false;
+                door_up   = false;
+            }
+
+            if random_choice == 2 {
+                abs_tile_z = xx ifx abs_tile_z == 0  1 else 0;
+            } else if random_choice == 1 {
+                screen_x += 1;
+            } else  {
+                screen_y += 1;
             }
         }
 
@@ -218,11 +297,14 @@ game_update_and_render :: (
             if controller.right.ended_down {
                 d_player_x = 1;
             }
+            if controller.a.ended_down {
+                state.super_speed = !state.super_speed;
+            }
 
             // TODO: diagonal will be faster, fix once we have vectors!
             // MOVEMENT
-            d_player_x *= 8;  // speed him up
-            d_player_y *= 8;  // speed him up
+            d_player_x *= ifx state.super_speed  22 else 8;
+            d_player_y *= ifx state.super_speed  22 else 8;
 
             new_player_p := state.player_p;
             new_player_p.tile_rel_x  += input.dt_for_frame * d_player_x;
@@ -249,23 +331,25 @@ game_update_and_render :: (
     screen_center_y := 0.5 * cast(float)buffer.height;
 
     // DRAW MAP
-    for rel_row: -10..9 {
-        for rel_col: -20..19 {
+    for rel_row: -80..79 {
+        for rel_col: -80..79 {
             col : u32 = cast,trunc(u32)(cast(s64)state.player_p.abs_tile_x + rel_col);
             row : u32 = cast,trunc(u32)(cast(s64)state.player_p.abs_tile_y + rel_row);
-            tile_id := get_tile_value(tile_map, col, row);
+            tile_id := get_tile_value(tile_map, col, row, state.player_p.abs_tile_z);
+            if tile_id == 0 continue;
 
-            gray := ifx tile_id == 1  1.0 else .5;
+            gray := ifx tile_id == 2  1.0 else .5;
             gray  = ifx state.player_p.abs_tile_x == col && state.player_p.abs_tile_y == row  0 else gray;
+            gray  = ifx tile_id > 2  0.25 else gray;
 
-            cen_x := screen_center_x - tile_map.meters_to_pixels * state.player_p.tile_rel_x +
-                rel_col * cast(float)tile_map.tile_side_in_pixels;
-            cen_y := screen_center_y + tile_map.meters_to_pixels * state.player_p.tile_rel_y -
-                rel_row * cast(float)tile_map.tile_side_in_pixels;
-            min_x := cen_x - 0.5 * cast(float)tile_map.tile_side_in_pixels;
-            min_y := cen_y - 0.5 * cast(float)tile_map.tile_side_in_pixels;
-            max_x := cen_x + 0.5 * cast(float)tile_map.tile_side_in_pixels;
-            max_y := cen_y + 0.5 * cast(float)tile_map.tile_side_in_pixels;
+            cen_x := screen_center_x - METERS_TO_PIXELS * state.player_p.tile_rel_x +
+                rel_col * TILE_SIDE_IN_PIXELS;
+            cen_y := screen_center_y + METERS_TO_PIXELS * state.player_p.tile_rel_y -
+                rel_row * TILE_SIDE_IN_PIXELS;
+            min_x := cen_x - 0.5 * TILE_SIDE_IN_PIXELS;
+            min_y := cen_y - 0.5 * TILE_SIDE_IN_PIXELS;
+            max_x := cen_x + 0.5 * TILE_SIDE_IN_PIXELS;
+            max_y := cen_y + 0.5 * TILE_SIDE_IN_PIXELS;
             draw_rectangle(buffer, min_x, min_y, max_x, max_y, gray, gray, gray);
         }
     }
@@ -273,12 +357,12 @@ game_update_and_render :: (
     // DRAW PLAYER
     player_r, player_g, player_b := 1.0, 1.0, 0.0;
 
-    player_left := screen_center_x - .5 * tile_map.meters_to_pixels * player_width;
-    player_top  := screen_center_y - tile_map.meters_to_pixels * player_height;
+    player_left := screen_center_x - .5 * METERS_TO_PIXELS * player_width;
+    player_top  := screen_center_y - METERS_TO_PIXELS * player_height;
     draw_rectangle(buffer,
                    player_left, player_top,
-                   player_left + tile_map.meters_to_pixels * player_width,
-                   player_top + tile_map.meters_to_pixels * player_height,
+                   player_left + METERS_TO_PIXELS * player_width,
+                   player_top + METERS_TO_PIXELS * player_height,
                    player_r, player_g, player_b);
 
     return true;
@@ -289,6 +373,7 @@ game_update_and_render :: (
 #load "handmade_intrinsics.jai";
 
 #import "Basic";
+#import "Random";
 
 /*
 render_weird_gradient :: (back_buffer: *Game_Offscreen_Buffer, xOffset: int, yOffset: int) {

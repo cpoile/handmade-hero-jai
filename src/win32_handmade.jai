@@ -75,7 +75,7 @@ Win32_State :: struct {
     game_memory_block     : []u8;
 
     // NOTE: can change this when we need more buffers.
-    replay_buffers        : [1]Win32_Replay_Buffer;
+    replay_buffers        : [2]Win32_Replay_Buffer;
     recording_handle      : HANDLE;
     input_recording_index : int;
     playback_handle       : HANDLE;
@@ -481,6 +481,7 @@ win32_process_pending_messages :: (state: *Win32_State, keyboard_controller: *Ga
                 case VK_DOWN;    win32_process_keyboard_message(*keyboard_controller.down, isDown);
                 case VK_LEFT;    win32_process_keyboard_message(*keyboard_controller.left, isDown);
                 case VK_RIGHT;   win32_process_keyboard_message(*keyboard_controller.right, isDown);
+                case VK_SPACE;   win32_process_keyboard_message(*keyboard_controller.a, isDown);
                 case VK_ESCAPE;  global_running = false;
                 case #char "P";  if isDown  global_pause = !global_pause;
                 case #char "L";  if isDown {
