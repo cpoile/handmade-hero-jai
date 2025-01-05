@@ -19,7 +19,7 @@
 */
 
 // Set true when we want to do the stay on-top and transparent window thing:
-LAYERED_WINDOW :: true;
+LAYERED_WINDOW :: false;
 
 SAMPLE_RATE            : s32 : 48000;
 BYTES_PER_SAMPLE       :: size_of(s16) * 2;
@@ -660,8 +660,7 @@ main :: () {
     sleep_is_granular := timeBeginPeriod(desired_scheduler_ms) == TIMERR_NOERROR;
     defer timeEndPeriod(desired_scheduler_ms);
 
-    width  : s32 = 960;
-    height : s32 = 540;
+    width, height : s32 = 960, 540;
     win32_resize_DIB_section(*global_back_buffer, width, height);
     defer free(global_back_buffer.memory);
 

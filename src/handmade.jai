@@ -21,6 +21,7 @@ Game_State :: struct {
     world       : *World;
     player_p    : Tile_Map_Position;
     super_speed : bool;
+    bmp         : BMP;
 }
 
 Raw_Position :: struct {
@@ -95,6 +96,43 @@ draw_rectangle :: (buffer: *Game_Offscreen_Buffer,
     }
 }
 
+Bitmap_Header :: struct {
+    file_type      : u16 #align 1;
+    file_size      : u32 #align 1;
+    reserved_1     : u16 #align 1;
+    reserved_2     : u16 #align 1;
+    bitmap_offset  : u32 #align 1;
+    size           : u32 #align 1;
+    width          : s32 #align 1;
+    height         : s32 #align 1;
+    planes         : u16 #align 1;
+    bits_per_pixel : u16 #align 1;
+} #no_padding;
+
+BMP :: struct {
+    pixels        : []u32;
+    width, height : s32;
+    pitch         : u32;
+}
+
+load_bmp :: (read_entire_file: DEBUG_Platform_Read_Entire_File, filename: string) -> BMP {
+    contents, ok := read_entire_file(filename);
+    if !ok {
+        return .{};
+    }
+    header := cast(*Bitmap_Header)contents.data;
+    ret := BMP.{
+        pixels = []u32.{
+            count = header.width * header.height * header.planes,
+            data = cast(*u32)(contents.data + header.bitmap_offset),
+        },
+        width = header.width,
+        height = header.height,
+        pitch = xx header.width,
+    };
+    return ret;
+}
+
 // NOTE: at the moment this has to be a very fast function, it cannot be more than a ms or so.
 #program_export
 game_get_sound_samples :: (game_memory: *Game_Memory, sound_buffer: *Game_Sound_Buffer) {
@@ -156,10 +194,12 @@ game_update_and_render :: (
 
     state := cast(*Game_State)game_memory.permanent.data;
     if !game_memory.initialized {
+        state.bmp = load_bmp(game_memory.read_entire_file, "test/test_background.bmp");
+
         state.player_p.abs_tile_x = 2;
         state.player_p.abs_tile_y = 3;
-        state.player_p.tile_rel_x = 5;
-        state.player_p.tile_rel_y = 5;
+        state.player_p.offset_x = 5;
+        state.player_p.offset_y = 5;
         initialize_arena(*state.world_arena, array_view(game_memory.permanent, size_of(Game_State)));
 
         //state.world := World.{*tile_map};
@@ -190,13 +230,13 @@ game_update_and_render :: (
         //
         // CREATE MAP
         //
-        door_left   := false;
-        door_right  := false;
-        door_top    := false;
-        door_bottom := false;
-        door_up     := false;
-        door_down   := false;
-        random_choice : u64 = 0;
+        door_left      := false;
+        door_right     := false;
+        door_top       := false;
+        door_bottom    := false;
+        door_up        := false;
+        door_down      := false;
+        random_choice  : u64 = 0;
 
         for screen_idx: 0..99 {
             if door_up || door_down {
@@ -206,14 +246,15 @@ game_update_and_render :: (
                 random_choice = random_get() % 3;
             }
 
+            created_z_door := false;
             if random_choice == 2 {
                 if abs_tile_z == 0 then door_up = true; else door_down = true;
+                created_z_door = true;
             } else if random_choice == 1 {
                 door_right = true;
             } else {
                 door_top = true;
             }
-
 
             for tile_y: 0..tiles_per_height-1 {
                 for tile_x: 0..tiles_per_width-1 {
@@ -248,12 +289,10 @@ game_update_and_render :: (
             door_bottom = door_top;
             door_right  = false;
             door_top    = false;
-            if door_up {
-                door_down = true;
-                door_up   = false;
-            } else if door_down {
-                door_down = false;
-                door_up   = true;
+
+            if created_z_door {
+                door_down = !door_down;
+                door_up   = !door_up;
             } else {
                 door_down = false;
                 door_up   = false;
@@ -307,19 +346,28 @@ game_update_and_render :: (
             d_player_y *= ifx state.super_speed  22 else 8;
 
             new_player_p := state.player_p;
-            new_player_p.tile_rel_x  += input.dt_for_frame * d_player_x;
-            new_player_p.tile_rel_y += input.dt_for_frame * d_player_y;
+            new_player_p.offset_x  += input.dt_for_frame * d_player_x;
+            new_player_p.offset_y += input.dt_for_frame * d_player_y;
             new_player_p = re_canonicalize_position(tile_map, new_player_p);
 
             player_left := new_player_p;
-            player_left.tile_rel_x -= 0.5*player_width;
+            player_left.offset_x -= 0.5*player_width;
             player_left = re_canonicalize_position(tile_map, player_left);
 
             player_right := new_player_p;
-            player_right.tile_rel_x += 0.5*player_width;
+            player_right.offset_x += 0.5*player_width;
             player_right = re_canonicalize_position(tile_map, player_right);
 
             if is_tile_map_point_empty(tile_map, player_left) && is_tile_map_point_empty(tile_map, player_right) {
+                // Not good code, will be nuked. Glue code to allow us to test other systems.
+                if !are_on_same_tile(*state.player_p, *new_player_p) {
+                    new_tile_value := get_tile_value(tile_map, new_player_p);
+                    if new_tile_value == 3 {
+                        new_player_p.abs_tile_z += 1;
+                    } else if new_tile_value == 4 {
+                        new_player_p.abs_tile_z -= 1;
+                    }
+                }
                 state.player_p = new_player_p;
             }
         }
@@ -342,9 +390,9 @@ game_update_and_render :: (
             gray  = ifx state.player_p.abs_tile_x == col && state.player_p.abs_tile_y == row  0 else gray;
             gray  = ifx tile_id > 2  0.25 else gray;
 
-            cen_x := screen_center_x - METERS_TO_PIXELS * state.player_p.tile_rel_x +
+            cen_x := screen_center_x - METERS_TO_PIXELS * state.player_p.offset_x +
                 rel_col * TILE_SIDE_IN_PIXELS;
-            cen_y := screen_center_y + METERS_TO_PIXELS * state.player_p.tile_rel_y -
+            cen_y := screen_center_y + METERS_TO_PIXELS * state.player_p.offset_y -
                 rel_row * TILE_SIDE_IN_PIXELS;
             min_x := cen_x - 0.5 * TILE_SIDE_IN_PIXELS;
             min_y := cen_y - 0.5 * TILE_SIDE_IN_PIXELS;
@@ -364,6 +412,20 @@ game_update_and_render :: (
                    player_left + METERS_TO_PIXELS * player_width,
                    player_top + METERS_TO_PIXELS * player_height,
                    player_r, player_g, player_b);
+
+    dest_row := buffer.memory;
+    src_row := state.bmp.pixels.data;
+    for 0..buffer.height-1 {
+        dest_pixel := cast(*u32) dest_row;
+        src_pixel := src_row;
+        for 0..buffer.width-1 {
+            dest_pixel.* = src_pixel.*;
+            dest_pixel += 1;
+            src_pixel += 1;
+        }
+        dest_row += buffer.pitch;
+        src_row += state.bmp.pitch;
+    }
 
     return true;
 }

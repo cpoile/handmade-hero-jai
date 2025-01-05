@@ -5,8 +5,9 @@ Tile_Map_Position :: struct {
     abs_tile_y : u32;
     abs_tile_z : u32;
 
-    tile_rel_x : float;
-    tile_rel_y : float;
+    // NOTE: offsets from the center of the tile
+    offset_x : float;
+    offset_y : float;
 }
 
 Tile_Chunk_Position :: struct {
@@ -32,25 +33,6 @@ Tile_Map :: struct {
     tile_chunk_count_z  : u32;
 
     tile_chunks         : []Tile_Chunk;
-}
-
-re_canonicalize_coord :: (tile_map: *Tile_Map, tile: *u32, tile_rel: *float) {
-    // NOTE: world is toroidal
-    offset := round_s32(tile_rel.* / tile_map.tile_side_in_meters);
-    tile.* = cast,trunc(u32)(cast(s64)tile.* + offset);
-    tile_rel.* -= offset * tile_map.tile_side_in_meters;
-
-    assert(tile_rel.* >= -0.5*tile_map.tile_side_in_meters);
-    assert(tile_rel.* <= 0.5*tile_map.tile_side_in_meters);
-}
-
-re_canonicalize_position :: (tile_map: *Tile_Map, pos: Tile_Map_Position) -> Tile_Map_Position {
-    res := pos;
-
-    re_canonicalize_coord(tile_map, *res.abs_tile_x, *res.tile_rel_x);
-    re_canonicalize_coord(tile_map, *res.abs_tile_y, *res.tile_rel_y);
-
-    return res;
 }
 
 get_tile_chunk :: (tile_map: *Tile_Map, tile_chunk_x: u32, tile_chunk_y: u32, tile_chunk_z: u32) -> *Tile_Chunk {
@@ -95,14 +77,6 @@ set_tile_value :: (tile_map: *Tile_Map, tile_chunk: Tile_Chunk, test_tile_x: u32
     }
 }
 
-get_tile_value :: (tile_map: *Tile_Map, abs_tile_x: u32, abs_tile_y: u32, abs_tile_z: u32) -> u32 {
-    chunk_pos := get_chunk_pos_for(tile_map, abs_tile_x, abs_tile_y, abs_tile_z);
-    tile_chunk := get_tile_chunk(tile_map, chunk_pos.tile_chunk_x, chunk_pos.tile_chunk_y, chunk_pos.tile_chunk_z);
-    tile := get_tile_value(tile_map, tile_chunk, chunk_pos.rel_tile_x, chunk_pos.rel_tile_y);
-
-    return tile;
-}
-
 get_chunk_pos_for :: (tile_map: *Tile_Map, abs_tile_x: u32, abs_tile_y: u32, abs_tile_z: u32) -> Tile_Chunk_Position {
     res: Tile_Chunk_Position;
     res.tile_chunk_x = abs_tile_x >> tile_map.chunk_shift;
@@ -113,10 +87,25 @@ get_chunk_pos_for :: (tile_map: *Tile_Map, abs_tile_x: u32, abs_tile_y: u32, abs
     return res;
 }
 
+get_tile_value :: (tile_map: *Tile_Map, abs_tile_x: u32, abs_tile_y: u32, abs_tile_z: u32) -> u32 {
+    chunk_pos := get_chunk_pos_for(tile_map, abs_tile_x, abs_tile_y, abs_tile_z);
+    tile_chunk := get_tile_chunk(tile_map, chunk_pos.tile_chunk_x, chunk_pos.tile_chunk_y, chunk_pos.tile_chunk_z);
+    tile := get_tile_value(tile_map, tile_chunk, chunk_pos.rel_tile_x, chunk_pos.rel_tile_y);
+
+    return tile;
+}
+
+get_tile_value :: (tile_map: *Tile_Map, pos: Tile_Map_Position) -> u32 {
+    tile_chunk_value := get_tile_value(tile_map, pos.abs_tile_x, pos.abs_tile_y, pos.abs_tile_z);
+    return tile_chunk_value;
+ }
+
 is_tile_map_point_empty :: (tile_map: *Tile_Map, can_pos: Tile_Map_Position) -> bool {
     tile_chunk_value := get_tile_value(tile_map, can_pos.abs_tile_x, can_pos.abs_tile_y, can_pos.abs_tile_z);
 
-    return tile_chunk_value == 1;
+    empty := tile_chunk_value == 1 || tile_chunk_value == 3 || tile_chunk_value == 4;
+
+    return empty;
 }
 
 set_tile_value :: (arena: *Memory_Arena, tile_map: *Tile_Map, abs_tile_x: u32, abs_tile_y: u32, abs_tile_z: u32, tile_value: u32) {
@@ -131,4 +120,31 @@ set_tile_value :: (arena: *Memory_Arena, tile_map: *Tile_Map, abs_tile_x: u32, a
     }
 
      set_tile_value(tile_map, tile_chunk.*, chunk_pos.rel_tile_x, chunk_pos.rel_tile_y, tile_value);
+}
+
+//
+// Do these really belong in a more position/geometry type of file?
+//
+re_canonicalize_coord :: (tile_map: *Tile_Map, tile: *u32, tile_rel: *float) {
+    // NOTE: world is toroidal
+    offset := round_s32(tile_rel.* / tile_map.tile_side_in_meters);
+    tile.* = cast,trunc(u32)(cast(s64)tile.* + offset);
+    tile_rel.* -= offset * tile_map.tile_side_in_meters;
+
+    assert(tile_rel.* >= -0.5*tile_map.tile_side_in_meters);
+    assert(tile_rel.* <= 0.5*tile_map.tile_side_in_meters);
+}
+
+re_canonicalize_position :: (tile_map: *Tile_Map, pos: Tile_Map_Position) -> Tile_Map_Position {
+    res := pos;
+
+    re_canonicalize_coord(tile_map, *res.abs_tile_x, *res.offset_x);
+    re_canonicalize_coord(tile_map, *res.abs_tile_y, *res.offset_y);
+
+    return res;
+}
+
+are_on_same_tile :: (a: *Tile_Map_Position, b: *Tile_Map_Position) -> bool {
+    res := a.abs_tile_x == b.abs_tile_x && a.abs_tile_y == b.abs_tile_y && a.abs_tile_z == b.abs_tile_z;
+    return res;
 }
