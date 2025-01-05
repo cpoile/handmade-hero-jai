@@ -150,7 +150,7 @@ game_update_and_render :: (
     TILE_CHUNK_COUNT_Z   :: 128;
 
     TILE_SIDE_IN_METERS :: 1.4;
-    TILE_SIDE_IN_PIXELS :: 10.0;
+    TILE_SIDE_IN_PIXELS :: 60.0;
     METERS_TO_PIXELS    :: TILE_SIDE_IN_PIXELS / TILE_SIDE_IN_METERS;
 
 
@@ -331,8 +331,8 @@ game_update_and_render :: (
     screen_center_y := 0.5 * cast(float)buffer.height;
 
     // DRAW MAP
-    for rel_row: -80..79 {
-        for rel_col: -80..79 {
+    for rel_row: -20..19 {
+        for rel_col: -20..19 {
             col : u32 = cast,trunc(u32)(cast(s64)state.player_p.abs_tile_x + rel_col);
             row : u32 = cast,trunc(u32)(cast(s64)state.player_p.abs_tile_y + rel_row);
             tile_id := get_tile_value(tile_map, col, row, state.player_p.abs_tile_z);

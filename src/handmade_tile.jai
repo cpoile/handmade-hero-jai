@@ -107,6 +107,7 @@ get_chunk_pos_for :: (tile_map: *Tile_Map, abs_tile_x: u32, abs_tile_y: u32, abs
     res: Tile_Chunk_Position;
     res.tile_chunk_x = abs_tile_x >> tile_map.chunk_shift;
     res.tile_chunk_y = abs_tile_y >> tile_map.chunk_shift;
+    res.tile_chunk_z = abs_tile_z;
     res.rel_tile_x = abs_tile_x & tile_map.chunk_mask;
     res.rel_tile_y = abs_tile_y & tile_map.chunk_mask;
     return res;
