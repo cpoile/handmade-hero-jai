@@ -21,7 +21,10 @@ Game_State :: struct {
     world       : *World;
     player_p    : Tile_Map_Position;
     super_speed : bool;
-    bmp         : BMP;
+    background  : Bitmap;
+    hero_head   : Bitmap;
+    hero_cape   : Bitmap;
+    hero_torso  : Bitmap;
 }
 
 Raw_Position :: struct {
@@ -85,9 +88,9 @@ draw_rectangle :: (buffer: *Game_Offscreen_Buffer,
 
     row := buffer.memory + (min_y * buffer.pitch + min_x * buffer.bytes_per_pixel);
 
-    for y: min_y..max_y-1 {
+    for min_y..max_y-1 {
         pixel := cast(*u32)row;
-        for x: min_x..max_x-1 {
+        for min_x..max_x-1 {
             <<pixel = color;
             pixel += 1;
         }
@@ -96,39 +99,99 @@ draw_rectangle :: (buffer: *Game_Offscreen_Buffer,
     }
 }
 
+draw_bitmap :: (buffer: *Game_Offscreen_Buffer, bitmap: Bitmap, x: float, y: float) {
+    min_x := round_s32(x);
+    min_y := round_s32(y);
+    max_x := round_s32(x + cast(float)bitmap.width);
+    max_y := round_s32(y + cast(float)bitmap.height);
+
+    if min_x < 0  min_x = 0;
+    if min_y < 0  min_y = 0;
+    if max_x > buffer.width   max_x = buffer.width;
+    if max_y > buffer.height  max_y = buffer.height;
+
+    // don't try to draw if we have zero width or zero height
+    if min_x == max_x  return;
+    if min_y == max_y  return;
+
+    // TODO: src_row needs to be changed based on clipping
+    src_row := bitmap.pixels.data + (bitmap.height - 1) * xx bitmap.pitch;
+    dest_row := buffer.memory + min_y * buffer.pitch + min_x * buffer.bytes_per_pixel;
+    for min_y..max_y-1 {
+        dest_pixel := cast(*u32) dest_row;
+        src_pixel := src_row;
+        for min_x..max_x-1 {
+            dest_pixel.* = src_pixel.*;
+            dest_pixel += 1;
+            src_pixel += 1;
+        }
+        dest_row += buffer.pitch;
+        src_row -= bitmap.pitch;
+    }
+}
+
+
 Bitmap_Header :: struct {
-    file_type      : u16 #align 1;
-    file_size      : u32 #align 1;
-    reserved_1     : u16 #align 1;
-    reserved_2     : u16 #align 1;
-    bitmap_offset  : u32 #align 1;
-    size           : u32 #align 1;
-    width          : s32 #align 1;
-    height         : s32 #align 1;
-    planes         : u16 #align 1;
-    bits_per_pixel : u16 #align 1;
+    file_type        : u16 #align 1;
+    file_size        : u32 #align 1;
+    reserved_1       : u16 #align 1;
+    reserved_2       : u16 #align 1;
+    bitmap_offset    : u32 #align 1;
+    size             : u32 #align 1;
+    width            : s32 #align 1;
+    height           : s32 #align 1;
+    planes           : u16 #align 1;
+    bits_per_pixel   : u16 #align 1;
+    compression      : u32 #align 1;
+    size_of_bitmap   : u32 #align 1;
+    horz_resolution  : s32 #align 1;
+    vert_resolution  : s32 #align 1;
+    colors_used      : u32 #align 1;
+    colors_important : u32 #align 1;
+    red_mask         : u32 #align 1;
+    green_mask       : u32 #align 1;
+    blue_mast        : u32 #align 1;
 } #no_padding;
 
-BMP :: struct {
+Bitmap :: struct {
     pixels        : []u32;
     width, height : s32;
     pitch         : u32;
 }
 
-load_bmp :: (read_entire_file: DEBUG_Platform_Read_Entire_File, filename: string) -> BMP {
+load_bmp :: (read_entire_file: DEBUG_Platform_Read_Entire_File, filename: string) -> Bitmap {
+    // NOTE: stored byte order: BB GG RR AA, from bottom row up
+    // NOTE:  in little endian: AA RR GG BB
+
+    // NOTE: don't use this generically, Bitmap can go in either direction!!
+    //
+    // The art assets in test are not like my tests in GIMP, they are:
+    // NOTE: stored byte order: AA BB GG RR, from bottom row up
+    // NOTE:  in little endian: 0xRRGGBBAA
+
     contents, ok := read_entire_file(filename);
     if !ok {
         return .{};
     }
     header := cast(*Bitmap_Header)contents.data;
-    ret := BMP.{
-        pixels = []u32.{
-            count = header.width * header.height * header.planes,
-            data = cast(*u32)(contents.data + header.bitmap_offset),
-        },
-        width = header.width,
+
+    // not sure what to do with planes, so let's assert if we ever get any:
+    assert(header.planes == 1);
+
+    pixels := []u32.{
+        count = header.width * header.height * header.planes,
+        data = cast(*u32)(contents.data + header.bitmap_offset),
+    };
+    // have to put the AA channel up front:
+    for * pixels {
+        it.* = (it.* >> 8) | (it.* << 24);
+    }
+
+    ret := Bitmap.{
+        pixels = pixels,
+        width  = header.width,
         height = header.height,
-        pitch = xx header.width,
+        pitch  = xx header.width,
     };
     return ret;
 }
@@ -194,7 +257,11 @@ game_update_and_render :: (
 
     state := cast(*Game_State)game_memory.permanent.data;
     if !game_memory.initialized {
-        state.bmp = load_bmp(game_memory.read_entire_file, "test/test_background.bmp");
+        //state.bmp = load_bmp(game_memory.read_entire_file, "structured_art.bmp");
+        state.background = load_bmp(game_memory.read_entire_file, "test/test_background.bmp");
+        state.hero_head = load_bmp(game_memory.read_entire_file, "test/test_hero_front_head.bmp");
+        state.hero_cape = load_bmp(game_memory.read_entire_file, "test/test_hero_front_cape.bmp");
+        state.hero_torso = load_bmp(game_memory.read_entire_file, "test/test_hero_front_torso.bmp");
 
         state.player_p.abs_tile_x = 2;
         state.player_p.abs_tile_y = 3;
@@ -373,7 +440,10 @@ game_update_and_render :: (
         }
     }
 
-    draw_rectangle(buffer, 0, 0, cast(float)buffer.width, cast(float)buffer.height, 1, 0, 1);
+    // DRAW background
+    draw_bitmap(buffer, state.background, 0, 0);
+
+    //draw_rectangle(buffer, 0, 0, cast(float)buffer.width, cast(float)buffer.height, 1, 0, 1);
 
     screen_center_x := 0.5 * cast(float)buffer.width;
     screen_center_y := 0.5 * cast(float)buffer.height;
@@ -384,7 +454,7 @@ game_update_and_render :: (
             col : u32 = cast,trunc(u32)(cast(s64)state.player_p.abs_tile_x + rel_col);
             row : u32 = cast,trunc(u32)(cast(s64)state.player_p.abs_tile_y + rel_row);
             tile_id := get_tile_value(tile_map, col, row, state.player_p.abs_tile_z);
-            if tile_id == 0 continue;
+            if tile_id < 2 continue;
 
             gray := ifx tile_id == 2  1.0 else .5;
             gray  = ifx state.player_p.abs_tile_x == col && state.player_p.abs_tile_y == row  0 else gray;
@@ -407,25 +477,14 @@ game_update_and_render :: (
 
     player_left := screen_center_x - .5 * METERS_TO_PIXELS * player_width;
     player_top  := screen_center_y - METERS_TO_PIXELS * player_height;
-    draw_rectangle(buffer,
-                   player_left, player_top,
-                   player_left + METERS_TO_PIXELS * player_width,
-                   player_top + METERS_TO_PIXELS * player_height,
-                   player_r, player_g, player_b);
 
-    dest_row := buffer.memory;
-    src_row := state.bmp.pixels.data;
-    for 0..buffer.height-1 {
-        dest_pixel := cast(*u32) dest_row;
-        src_pixel := src_row;
-        for 0..buffer.width-1 {
-            dest_pixel.* = src_pixel.*;
-            dest_pixel += 1;
-            src_pixel += 1;
-        }
-        dest_row += buffer.pitch;
-        src_row += state.bmp.pitch;
-    }
+    draw_bitmap(buffer, state.hero_head, player_left, player_top);
+
+    // draw_rectangle(buffer,
+    //                player_left, player_top,
+    //                player_left + METERS_TO_PIXELS * player_width,
+    //                player_top + METERS_TO_PIXELS * player_height,
+    //                player_r, player_g, player_b);
 
     return true;
 }
