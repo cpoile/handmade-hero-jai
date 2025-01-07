@@ -14,5 +14,32 @@ floor_float_to_s32 :: (f: float) -> s32 {
 
 // and sin, cos, atan2
 
+// "reference"
+bitscan :: (mask: $T) -> index: s32, success: bool {
+    for i: 0..cast(u32)31 {
+        if mask & (1 << i) {
+            return cast,trunc(s32)i, true;
+        }
+    }
+    return 0, false;
+}
+
+// copied and simplified from Bit_Operations, will only work on x64 and not 8 bits:
+bit_scan_forward :: (input: $T) -> index: s32, success: bool #expand {
+    BITS :: size_of(T)*8;
+
+    #if CPU == .X64 && BITS > 8 {
+        result: T = xx,no_check -1;
+        #asm {
+            bsf?T     result, input;
+        }
+
+        return cast,trunc(s32)(result), result != -1;
+    } else {
+        bitscan(input);
+    }
+}
+
+
 #scope_file
 #import "Math";

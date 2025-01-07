@@ -121,7 +121,25 @@ draw_bitmap :: (buffer: *Game_Offscreen_Buffer, bitmap: Bitmap, x: float, y: flo
         dest_pixel := cast(*u32) dest_row;
         src_pixel := src_row;
         for min_x..max_x-1 {
-            dest_pixel.* = src_pixel.*;
+            a := cast(float)((src_pixel.* >> 24) & 0xFF)/255.0;
+
+            sr := cast(float)((src_pixel.* >> 16) & 0xFF);
+            sg := cast(float)((src_pixel.* >> 8) & 0xFF);
+            sb := cast(float)(src_pixel.* & 0xFF);
+
+            dr := cast(float)((dest_pixel.* >> 16) & 0xFF);
+            dg := cast(float)((dest_pixel.* >> 8) & 0xFF);
+            db := cast(float)(dest_pixel.* & 0xFF);
+
+            // NOTE: someday we'll talk about pre-multiplied alpha, this isn't
+            r := (1-a)*dr + a*sr;
+            g := (1-a)*dg + a*sg;
+            b := (1-a)*db + a*sb;
+
+            dest_pixel.* = ((cast,trunc(u32)(r + 0.5)) << 16) |
+                           ((cast,trunc(u32)(g + 0.5)) << 8) |
+                            cast,trunc(u32)(b + 0.5);
+
             dest_pixel += 1;
             src_pixel += 1;
         }
@@ -150,7 +168,7 @@ Bitmap_Header :: struct {
     colors_important : u32 #align 1;
     red_mask         : u32 #align 1;
     green_mask       : u32 #align 1;
-    blue_mast        : u32 #align 1;
+    blue_mask        : u32 #align 1;
 } #no_padding;
 
 Bitmap :: struct {
@@ -160,14 +178,18 @@ Bitmap :: struct {
 }
 
 load_bmp :: (read_entire_file: DEBUG_Platform_Read_Entire_File, filename: string) -> Bitmap {
-    // NOTE: stored byte order: BB GG RR AA, from bottom row up
-    // NOTE:  in little endian: AA RR GG BB
+    // NOTE: gimp stored byte order: BB GG RR AA, from bottom row up
+    // NOTE:       in little endian: AA RR GG BB
 
     // NOTE: don't use this generically, Bitmap can go in either direction!!
     //
-    // The art assets in test are not like my tests in GIMP, they are:
+    // The background asset in test are not like my tests in GIMP, they are:
     // NOTE: stored byte order: AA BB GG RR, from bottom row up
     // NOTE:  in little endian: 0xRRGGBBAA
+
+    // NOTE: the byte order is determined by the Header, so we have to read out
+    // the amsks and convert the pixels ourselves.
+
 
     contents, ok := read_entire_file(filename);
     if !ok {
@@ -182,9 +204,25 @@ load_bmp :: (read_entire_file: DEBUG_Platform_Read_Entire_File, filename: string
         count = header.width * header.height * header.planes,
         data = cast(*u32)(contents.data + header.bitmap_offset),
     };
+
+    alpha_mask := ~(header.red_mask | header.green_mask | header.blue_mask);
+    alpha_shift, red_shift, green_shift, blue_shift : s32;
+    success: bool;
+    alpha_shift, success = bit_scan_forward(alpha_mask);
+    assert(success);
+    red_shift, success = bit_scan_forward(header.red_mask);
+    assert(success);
+    green_shift, success = bit_scan_forward(header.green_mask);
+    assert(success);
+    blue_shift, success = bit_scan_forward(header.blue_mask);
+    assert(success);
+
     // have to put the AA channel up front:
     for * pixels {
-        it.* = (it.* >> 8) | (it.* << 24);
+        it.* = ((it.* >> alpha_shift) & 0xff << 24) |
+               ((it.* >> red_shift) & 0xff << 16) |
+               ((it.* >> green_shift) & 0xff << 8) |
+               ((it.* >> blue_shift) & 0xff << 0);
     }
 
     ret := Bitmap.{
