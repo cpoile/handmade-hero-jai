@@ -148,3 +148,21 @@ are_on_same_tile :: (a: *Tile_Map_Position, b: *Tile_Map_Position) -> bool {
     res := a.abs_tile_x == b.abs_tile_x && a.abs_tile_y == b.abs_tile_y && a.abs_tile_z == b.abs_tile_z;
     return res;
 }
+
+Tile_Map_Difference :: struct {
+    dx, dy, dz: float;
+}
+
+subtract :: (tile_map: *Tile_Map, a: *Tile_Map_Position, b: *Tile_Map_Position) -> Tile_Map_Difference {
+    d_tile_x := cast(float)a.abs_tile_x - cast(float)b.abs_tile_x;
+    d_tile_y := cast(float)a.abs_tile_y - cast(float)b.abs_tile_y;
+    d_tile_z := cast(float)a.abs_tile_z - cast(float)b.abs_tile_z;
+
+    ret := Tile_Map_Difference.{
+        tile_map.tile_side_in_meters * d_tile_x + (a.offset_x - b.offset_x),
+        tile_map.tile_side_in_meters *  d_tile_y + (a.offset_y - b.offset_y),
+        // TODO: think about what to do about z
+        tile_map.tile_side_in_meters * d_tile_z};
+
+    return ret;
+}

@@ -16,15 +16,25 @@ World :: struct {
      tile_map : *Tile_Map;
 }
 
+Hero_Bitmap :: struct {
+    align_x : s32;
+    align_y : s32;
+    head    : Bitmap;
+    cape    : Bitmap;
+    torso   : Bitmap;
+}
+
 Game_State :: struct {
-    world_arena : Memory_Arena;
-    world       : *World;
-    player_p    : Tile_Map_Position;
-    super_speed : bool;
-    background  : Bitmap;
-    hero_head   : Bitmap;
-    hero_cape   : Bitmap;
-    hero_torso  : Bitmap;
+    world_arena      : Memory_Arena;
+    world            : *World;
+
+    camera_p         : Tile_Map_Position;
+    player_p         : Tile_Map_Position;
+
+    super_speed      : bool;
+    background       : Bitmap;
+    facing_direction : s8;
+    hero_bitmaps     : [4]Hero_Bitmap;
 }
 
 Raw_Position :: struct {
@@ -34,6 +44,34 @@ Raw_Position :: struct {
     // NOTE: this is tile-map relative x and y.
     x          : float;
     y          : float;
+}
+
+Bitmap_Header :: struct {
+    file_type        : u16 #align 1;
+    file_size        : u32 #align 1;
+    reserved_1       : u16 #align 1;
+    reserved_2       : u16 #align 1;
+    bitmap_offset    : u32 #align 1;
+    size             : u32 #align 1;
+    width            : s32 #align 1;
+    height           : s32 #align 1;
+    planes           : u16 #align 1;
+    bits_per_pixel   : u16 #align 1;
+    compression      : u32 #align 1;
+    size_of_bitmap   : u32 #align 1;
+    horz_resolution  : s32 #align 1;
+    vert_resolution  : s32 #align 1;
+    colors_used      : u32 #align 1;
+    colors_important : u32 #align 1;
+    red_mask         : u32 #align 1;
+    green_mask       : u32 #align 1;
+    blue_mask        : u32 #align 1;
+} #no_padding;
+
+Bitmap :: struct {
+    pixels        : []u32;
+    width, height : s32;
+    pitch         : u32;
 }
 
 game_sound_output :: (sound_buffer: *Game_Sound_Buffer) {
@@ -99,14 +137,27 @@ draw_rectangle :: (buffer: *Game_Offscreen_Buffer,
     }
 }
 
-draw_bitmap :: (buffer: *Game_Offscreen_Buffer, bitmap: Bitmap, x: float, y: float) {
+draw_bitmap :: (buffer: *Game_Offscreen_Buffer, bitmap: Bitmap,
+                x: float, y: float, align_x: s32 = 0, align_y: s32 = 0)
+{
+    x -= align_x;
+    y -= align_y;
+
     min_x := round_s32(x);
     min_y := round_s32(y);
     max_x := round_s32(x + cast(float)bitmap.width);
     max_y := round_s32(y + cast(float)bitmap.height);
 
-    if min_x < 0  min_x = 0;
-    if min_y < 0  min_y = 0;
+    src_offset_x := 0;
+    if min_x < 0 {
+        src_offset_x = -min_x;
+        min_x = 0;
+    }
+    src_offset_y := 0;
+    if min_y < 0 {
+        src_offset_y = -min_y;
+        min_y = 0;
+    }
     if max_x > buffer.width   max_x = buffer.width;
     if max_y > buffer.height  max_y = buffer.height;
 
@@ -116,6 +167,7 @@ draw_bitmap :: (buffer: *Game_Offscreen_Buffer, bitmap: Bitmap, x: float, y: flo
 
     // TODO: src_row needs to be changed based on clipping
     src_row := bitmap.pixels.data + (bitmap.height - 1) * xx bitmap.pitch;
+    src_row += -src_offset_y * bitmap.pitch + src_offset_x;
     dest_row := buffer.memory + min_y * buffer.pitch + min_x * buffer.bytes_per_pixel;
     for min_y..max_y-1 {
         dest_pixel := cast(*u32) dest_row;
@@ -148,35 +200,6 @@ draw_bitmap :: (buffer: *Game_Offscreen_Buffer, bitmap: Bitmap, x: float, y: flo
     }
 }
 
-
-Bitmap_Header :: struct {
-    file_type        : u16 #align 1;
-    file_size        : u32 #align 1;
-    reserved_1       : u16 #align 1;
-    reserved_2       : u16 #align 1;
-    bitmap_offset    : u32 #align 1;
-    size             : u32 #align 1;
-    width            : s32 #align 1;
-    height           : s32 #align 1;
-    planes           : u16 #align 1;
-    bits_per_pixel   : u16 #align 1;
-    compression      : u32 #align 1;
-    size_of_bitmap   : u32 #align 1;
-    horz_resolution  : s32 #align 1;
-    vert_resolution  : s32 #align 1;
-    colors_used      : u32 #align 1;
-    colors_important : u32 #align 1;
-    red_mask         : u32 #align 1;
-    green_mask       : u32 #align 1;
-    blue_mask        : u32 #align 1;
-} #no_padding;
-
-Bitmap :: struct {
-    pixels        : []u32;
-    width, height : s32;
-    pitch         : u32;
-}
-
 load_bmp :: (read_entire_file: DEBUG_Platform_Read_Entire_File, filename: string) -> Bitmap {
     // NOTE: gimp stored byte order: BB GG RR AA, from bottom row up
     // NOTE:       in little endian: AA RR GG BB
@@ -196,6 +219,8 @@ load_bmp :: (read_entire_file: DEBUG_Platform_Read_Entire_File, filename: string
         return .{};
     }
     header := cast(*Bitmap_Header)contents.data;
+
+    assert(header.compression == 3);
 
     // not sure what to do with planes, so let's assert if we ever get any:
     assert(header.planes == 1);
@@ -297,9 +322,37 @@ game_update_and_render :: (
     if !game_memory.initialized {
         //state.bmp = load_bmp(game_memory.read_entire_file, "structured_art.bmp");
         state.background = load_bmp(game_memory.read_entire_file, "test/test_background.bmp");
-        state.hero_head = load_bmp(game_memory.read_entire_file, "test/test_hero_front_head.bmp");
-        state.hero_cape = load_bmp(game_memory.read_entire_file, "test/test_hero_front_cape.bmp");
-        state.hero_torso = load_bmp(game_memory.read_entire_file, "test/test_hero_front_torso.bmp");
+
+        bitmap := *state.hero_bitmaps[0];
+        bitmap.head  = load_bmp(game_memory.read_entire_file, "test/test_hero_right_head.bmp");
+        bitmap.cape  = load_bmp(game_memory.read_entire_file, "test/test_hero_right_cape.bmp");
+        bitmap.torso = load_bmp(game_memory.read_entire_file, "test/test_hero_right_torso.bmp");
+        bitmap.align_x = 72;
+        bitmap.align_y = 182;
+        bitmap += 1;
+
+        bitmap.head  = load_bmp(game_memory.read_entire_file, "test/test_hero_back_head.bmp");
+        bitmap.cape  = load_bmp(game_memory.read_entire_file, "test/test_hero_back_cape.bmp");
+        bitmap.torso = load_bmp(game_memory.read_entire_file, "test/test_hero_back_torso.bmp");
+        bitmap.align_x = 72;
+        bitmap.align_y = 182;
+        bitmap += 1;
+
+        bitmap.head  = load_bmp(game_memory.read_entire_file, "test/test_hero_left_head.bmp");
+        bitmap.cape  = load_bmp(game_memory.read_entire_file, "test/test_hero_left_cape.bmp");
+        bitmap.torso = load_bmp(game_memory.read_entire_file, "test/test_hero_left_torso.bmp");
+        bitmap.align_x = 72;
+        bitmap.align_y = 182;
+        bitmap += 1;
+
+        bitmap.head  = load_bmp(game_memory.read_entire_file, "test/test_hero_front_head.bmp");
+        bitmap.cape  = load_bmp(game_memory.read_entire_file, "test/test_hero_front_cape.bmp");
+        bitmap.torso = load_bmp(game_memory.read_entire_file, "test/test_hero_front_torso.bmp");
+        bitmap.align_x = 72;
+        bitmap.align_y = 182;
+
+        state.camera_p.abs_tile_x = 17/2;
+        state.camera_p.abs_tile_y = 9/2;
 
         state.player_p.abs_tile_x = 2;
         state.player_p.abs_tile_y = 3;
@@ -343,7 +396,7 @@ game_update_and_render :: (
         door_down      := false;
         random_choice  : u64 = 0;
 
-        for screen_idx: 0..99 {
+        for 0..99 {
             if door_up || door_down {
                 // previously we had gone up or down, next move has to be lateral
                 random_choice = random_get() % 2;
@@ -431,15 +484,19 @@ game_update_and_render :: (
 
             if controller.up.ended_down {
                 d_player_y = 1;
+                state.facing_direction = 1;
             }
             if controller.down.ended_down {
                 d_player_y = -1;
+                state.facing_direction = 3;
             }
             if controller.left.ended_down {
                 d_player_x = -1;
+                state.facing_direction = 2;
             }
             if controller.right.ended_down {
                 d_player_x = 1;
+                state.facing_direction = 0;
             }
             if controller.a.ended_down {
                 state.super_speed = !state.super_speed;
@@ -476,6 +533,14 @@ game_update_and_render :: (
                 state.player_p = new_player_p;
             }
         }
+
+        diff := subtract(tile_map, *state.player_p, *state.camera_p);
+        if diff.dx > 9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x += 17;
+        if diff.dx < -9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x -= 17;
+        if diff.dy > 5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y += 9;
+        if diff.dy < -5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y -= 9;
+
+        state.camera_p.abs_tile_z = state.player_p.abs_tile_z;
     }
 
     // DRAW background
@@ -489,18 +554,18 @@ game_update_and_render :: (
     // DRAW MAP
     for rel_row: -20..19 {
         for rel_col: -20..19 {
-            col : u32 = cast,trunc(u32)(cast(s64)state.player_p.abs_tile_x + rel_col);
-            row : u32 = cast,trunc(u32)(cast(s64)state.player_p.abs_tile_y + rel_row);
-            tile_id := get_tile_value(tile_map, col, row, state.player_p.abs_tile_z);
+            col : u32 = cast,trunc(u32)(cast(s64)state.camera_p.abs_tile_x + rel_col);
+            row : u32 = cast,trunc(u32)(cast(s64)state.camera_p.abs_tile_y + rel_row);
+            tile_id := get_tile_value(tile_map, col, row, state.camera_p.abs_tile_z);
             if tile_id < 2 continue;
 
             gray := ifx tile_id == 2  1.0 else .5;
-            gray  = ifx state.player_p.abs_tile_x == col && state.player_p.abs_tile_y == row  0 else gray;
+            gray  = ifx state.camera_p.abs_tile_x == col && state.camera_p.abs_tile_y == row  0 else gray;
             gray  = ifx tile_id > 2  0.25 else gray;
 
-            cen_x := screen_center_x - METERS_TO_PIXELS * state.player_p.offset_x +
+            cen_x := screen_center_x - METERS_TO_PIXELS * state.camera_p.offset_x +
                 rel_col * TILE_SIDE_IN_PIXELS;
-            cen_y := screen_center_y + METERS_TO_PIXELS * state.player_p.offset_y -
+            cen_y := screen_center_y + METERS_TO_PIXELS * state.camera_p.offset_y -
                 rel_row * TILE_SIDE_IN_PIXELS;
             min_x := cen_x - 0.5 * TILE_SIDE_IN_PIXELS;
             min_y := cen_y - 0.5 * TILE_SIDE_IN_PIXELS;
@@ -513,16 +578,24 @@ game_update_and_render :: (
     // DRAW PLAYER
     player_r, player_g, player_b := 1.0, 1.0, 0.0;
 
-    player_left := screen_center_x - .5 * METERS_TO_PIXELS * player_width;
-    player_top  := screen_center_y - METERS_TO_PIXELS * player_height;
+    diff := subtract(tile_map, *state.player_p, *state.camera_p);
 
-    draw_bitmap(buffer, state.hero_head, player_left, player_top);
+    player_ground_pt_x := screen_center_x + METERS_TO_PIXELS*diff.dx;
+    player_ground_pt_y := screen_center_y - METERS_TO_PIXELS*diff.dy;
+    player_left := player_ground_pt_x - .5 * METERS_TO_PIXELS * player_width;
+    player_top  := player_ground_pt_y - METERS_TO_PIXELS * player_height;
 
-    // draw_rectangle(buffer,
-    //                player_left, player_top,
-    //                player_left + METERS_TO_PIXELS * player_width,
-    //                player_top + METERS_TO_PIXELS * player_height,
-    //                player_r, player_g, player_b);
+    draw_rectangle(buffer,
+                   player_left, player_top,
+                   player_left + METERS_TO_PIXELS * player_width,
+                   player_top + METERS_TO_PIXELS * player_height,
+                   player_r, player_g, player_b);
+
+    bitmaps := state.hero_bitmaps[state.facing_direction];
+    draw_bitmap(buffer, bitmaps.torso, player_ground_pt_x, player_ground_pt_y, bitmaps.align_x, bitmaps.align_y);
+    draw_bitmap(buffer, bitmaps.cape, player_ground_pt_x, player_ground_pt_y, bitmaps.align_x, bitmaps.align_y);
+    draw_bitmap(buffer, bitmaps.head, player_ground_pt_x, player_ground_pt_y, bitmaps.align_x, bitmaps.align_y);
+
 
     return true;
 }

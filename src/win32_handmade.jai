@@ -19,7 +19,7 @@
 */
 
 // Set true when we want to do the stay on-top and transparent window thing:
-LAYERED_WINDOW :: false;
+LAYERED_WINDOW :: true;
 
 SAMPLE_RATE            : s32 : 48000;
 BYTES_PER_SAMPLE       :: size_of(s16) * 2;
@@ -1054,7 +1054,7 @@ main :: () {
         debug_last_play_cursor_index %= debug_last_play_cursor.count;
 }
 
-#if false {
+#if true {
         // Using rdtsc
         end_cycle_count := rdtsc();
         cycles_elapsed := end_cycle_count - last_cycle_count;
