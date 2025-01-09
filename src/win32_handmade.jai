@@ -1,14 +1,15 @@
 /* TODO: This is not the final platform layer!
 
+  - Fullscreen support
+  - WM_SETCURSOR (control cursor visibility)
+
+
   - Saved game locations
   - Getting a handle to our own executable file
   - Asset loading path
   - Threading (launch a thread)
   - Raw input (support for multiple keyboards)
-  - Sleep/timeBeginPeriod
   - ClipCursor() (for muliple monitor supprot)
-  - Fullscreen support
-  - WM_SETCURSOR (control cursor visibility)
   - QueryCancelAutoplay
   - WM_ACTIVATEAPP (for when we are not the active application)
   - Blit speed improvements (BitBlt)
@@ -19,14 +20,15 @@
 */
 
 // Set true when we want to do the stay on-top and transparent window thing:
-LAYERED_WINDOW :: true;
+LAYERED_WINDOW :: false;
 
 SAMPLE_RATE            : s32 : 48000;
 BYTES_PER_SAMPLE       :: size_of(s16) * 2;
 SOUND_BUFFER_SIZE      :: SAMPLE_RATE * BYTES_PER_SAMPLE;  // 1 second
 GAME_LOAD_FAILURES_MAX :: 30;  // avoid an infinite loop if we can't load the game dll
 
-global_base_path                : string;
+global_show_cursor       := false;
+global_base_path         : string;
 global_running           := true;
 global_pause             := false;
 global_back_buffer       : Offscreen_Buffer;
@@ -34,6 +36,8 @@ dsound_lib               :: #system_library "dsound";
 dsound                   : *IDirectSound8;
 global_sound_buffer      : *IDirectSoundBuffer8;
 global_perf_counter_freq : s64;
+global_saved_window_info : Saved_Window_Info;
+global_is_fullscreen     := false;
 
 Offscreen_Buffer :: struct {
     BitmapInfo      : BITMAPINFO;
@@ -340,12 +344,20 @@ win32_display_buffer_in_window :: (buffer: *Offscreen_Buffer, deviceContext: HDC
     // NOTE: during prototyping, we're going to always blit 1-to-1 pixels to remove stretching artifacts
     // while we're learning to code the renderer.
 
-    x_offset := 10;
-    y_offset := 10;
-    StretchDIBits(deviceContext,
-                  x_offset, y_offset, buffer.width, buffer.height,
-                  0, 0, buffer.width, buffer.height,
-                  buffer.memory, *buffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
+    // TODO: centering?
+    if destWidth >= buffer.width*2 && destHeight >= buffer.height*2 {
+        StretchDIBits(deviceContext,
+                      0, 0, buffer.width*2, buffer.height*2,
+                      0, 0, buffer.width, buffer.height,
+                      buffer.memory, *buffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
+    } else {
+        x_offset := 10;
+        y_offset := 10;
+        StretchDIBits(deviceContext,
+                      x_offset, y_offset, buffer.width, buffer.height,
+                      0, 0, buffer.width, buffer.height,
+                      buffer.memory, *buffer.BitmapInfo, DIB_RGB_COLORS, ROP.SRCCOPY);
+    }
 }
 
 win32_debug_draw_vertical :: (back_buffer: *Offscreen_Buffer, x: s32, top: s32, bottom: s32, color: u32) {
@@ -440,8 +452,7 @@ win32_main_window_callback :: (window: HWND, message: u32, WParam: WPARAM, LPara
         }
 
         case;
-            //            win32_debug("default\n")
-            result = DefWindowProcA(window, message, WParam, LParam);
+            result = DefWindowProcW(window, message, WParam, LParam);
         }
 
         return (result);
@@ -457,7 +468,7 @@ win32_process_keyboard_message :: (new_state: *Game_Button_State, isDown: bool) 
 
 win32_process_pending_messages :: (state: *Win32_State, keyboard_controller: *Game_Controller_Input) {
     message: MSG;
-    while PeekMessageA(*message, null, 0, 0, PM_REMOVE) {
+    while PeekMessageW(*message, null, 0, 0, PM_REMOVE) {
         if message.message == {
         case WM_QUIT;        global_running = false;
         case WM_SYSKEYDOWN;  #through;
@@ -497,11 +508,16 @@ win32_process_pending_messages :: (state: *Win32_State, keyboard_controller: *Ga
                         win32_end_input_playback(state);
                     }
                 }
+                case VK_RETURN;
+                    if isDown && altDown {
+                        global_is_fullscreen = !global_is_fullscreen;
+                        toggle_fullscreen(message.hwnd, global_is_fullscreen, *global_saved_window_info);
+                    }
                 }
             }
         case;
             TranslateMessage(*message);
-            DispatchMessageA(*message);
+            DispatchMessageW(*message);
         }
     }
 }
@@ -610,12 +626,17 @@ create_window :: (width: int, height: int, name: string) -> HWND {
     window_class.hCursor       = LoadCursorW(null, IDC_ARROW);
     window_class.hbrBackground = cast(HBRUSH) GetStockObject(BLACK_BRUSH);
     window_class.lpszMenuName  = null;
-    window_class.lpszClassName = U.utf8_to_wide("HandmadeHeroWindowClass",, temp);
+    window_class.lpszClassName = U.utf8_to_wide("HandmadeHeroClass",, temp);
 
     if RegisterClassExW(*window_class) == 0 {
         win32_error("RegisterClassExW returned 0.\n");
         return null;
     }
+
+#if false {
+    // not sure how/why to use this... keeping it here in case Casey comes back to it.
+    global_show_cursor = true;
+}
 
     rect : RECT;
     rect.right  = xx width;
@@ -638,15 +659,21 @@ create_window :: (width: int, height: int, name: string) -> HWND {
     }
     hwnd := CreateWindowExW(FLAGS,
                            window_class.lpszClassName,
-                           U.utf8_to_wide("Oh my, Handmade Hero",, temp),
+                           U.utf8_to_wide("Handmade Hero",, temp),
                            style,
                            xx window_x, xx window_y,
                            xx client_width, xx client_height,
                            null,
                            null,
-                           hInstance,
+                           cast (HINSTANCE) 0,
                            null);
-    SetWindowTextA(hwnd, to_c_string("Oh my, Handmade Hero"));
+
+    UpdateWindow(hwnd);
+    ShowWindow(hwnd, SW_SHOW);
+    SetForegroundWindow(hwnd);
+
+    res := SetWindowTextW(hwnd, U.utf8_to_wide("Handmade Hero",, temp));
+
     return hwnd;
 }
 
@@ -1054,7 +1081,7 @@ main :: () {
         debug_last_play_cursor_index %= debug_last_play_cursor.count;
 }
 
-#if true {
+#if false {
         // Using rdtsc
         end_cycle_count := rdtsc();
         cycles_elapsed := end_cycle_count - last_cycle_count;
@@ -1069,14 +1096,16 @@ main :: () {
 }
         new_input, old_input = old_input, new_input;
     }
+
+    ExitProcess(0);
 }
 
 win32_debug :: (msg: string, args: ..Any) {
-    OutputDebugStringA(to_c_string(tprint(msg, ..args),, temp));
+    OutputDebugStringW(U.utf8_to_wide(tprint(msg, ..args),, temp));
 }
 
 win32_error :: (msg: string, args: ..Any) {
-    OutputDebugStringA(to_c_string(tprint(msg, ..args),, temp));
+    OutputDebugStringW(U.utf8_to_wide(tprint(msg, ..args),, temp));
     log_error(msg, args);
 }
 
@@ -1094,3 +1123,8 @@ win32_error :: (msg: string, args: ..Any) {
 #import "String";
 #import "System";
 U :: #import "Windows_Utf8";
+
+#run {
+    WR :: #import "Windows_Resources";
+    WR.disable_runtime_console();
+}

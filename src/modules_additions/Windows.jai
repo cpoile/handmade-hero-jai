@@ -58,6 +58,10 @@ LPPAINTSTRUCT :: *PAINTSTRUCT;
 
 StretchDIBits :: (hdc: HDC, xDest: int, yDest: int, DestWidth: int, DestHeight: int, xSrc: int, ySrc: int, SrcWidth: int, SrcHeight: int, lpBits: *void, lpbmi: *BITMAPINFO, iUsage: u32, rop: ROP) -> int #foreign gdi;
 
+LockSetForegroundWindow :: (hwnd: HWND) -> bool #foreign user32;
+SetForegroundWindow :: (hWnd: HWND) -> bool #foreign user32;
+SetFocus :: (hWnd: HWND) -> HWND #foreign user32;
+BringWindowToTop :: (hWnd: HWND) -> HWND #foreign user32;
 
 #scope_file
 
