@@ -1,13 +1,12 @@
 Tile_Map_Position :: struct {
-    // NOTE: These are fixed point tile locations. The high 24 bits are the tile
+    // NOTE    : These are fixed point tile locations. The high 24 bits are the tile
     // chunk index, and the low 8 bits are the tile index in the chunk.
     abs_tile_x : u32;
     abs_tile_y : u32;
     abs_tile_z : u32;
 
-    // NOTE: offsets from the center of the tile
-    offset_x : float;
-    offset_y : float;
+    // NOTE    : offsets from the center of the tile
+    offset     : Vector2;
 }
 
 Tile_Chunk_Position :: struct {
@@ -138,8 +137,8 @@ re_canonicalize_coord :: (tile_map: *Tile_Map, tile: *u32, tile_rel: *float) {
 re_canonicalize_position :: (tile_map: *Tile_Map, pos: Tile_Map_Position) -> Tile_Map_Position {
     res := pos;
 
-    re_canonicalize_coord(tile_map, *res.abs_tile_x, *res.offset_x);
-    re_canonicalize_coord(tile_map, *res.abs_tile_y, *res.offset_y);
+    re_canonicalize_coord(tile_map, *res.abs_tile_x, *res.offset.x);
+    re_canonicalize_coord(tile_map, *res.abs_tile_y, *res.offset.y);
 
     return res;
 }
@@ -150,19 +149,20 @@ are_on_same_tile :: (a: *Tile_Map_Position, b: *Tile_Map_Position) -> bool {
 }
 
 Tile_Map_Difference :: struct {
-    dx, dy, dz: float;
+    dxy: Vector2;
+    dz: float;
 }
 
 subtract :: (tile_map: *Tile_Map, a: *Tile_Map_Position, b: *Tile_Map_Position) -> Tile_Map_Difference {
-    d_tile_x := cast(float)a.abs_tile_x - cast(float)b.abs_tile_x;
-    d_tile_y := cast(float)a.abs_tile_y - cast(float)b.abs_tile_y;
+    d_tile_xy :=  xy(cast(float)a.abs_tile_x - cast(float)b.abs_tile_x,
+                     cast(float)a.abs_tile_y - cast(float)b.abs_tile_y);
     d_tile_z := cast(float)a.abs_tile_z - cast(float)b.abs_tile_z;
 
     ret := Tile_Map_Difference.{
-        tile_map.tile_side_in_meters * d_tile_x + (a.offset_x - b.offset_x),
-        tile_map.tile_side_in_meters *  d_tile_y + (a.offset_y - b.offset_y),
+        d_tile_xy * tile_map.tile_side_in_meters + (a.offset - b.offset),
         // TODO: think about what to do about z
-        tile_map.tile_side_in_meters * d_tile_z};
+        tile_map.tile_side_in_meters * d_tile_z,
+    };
 
     return ret;
 }

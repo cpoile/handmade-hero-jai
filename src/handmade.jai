@@ -103,13 +103,11 @@ game_sound_output :: (sound_buffer: *Game_Sound_Buffer) {
 
 // rectangle will fill up to but not including final row/col
 draw_rectangle :: (buffer: *Game_Offscreen_Buffer,
-    real_min_x: float, real_min_y: float, real_max_x: float, real_max_y: float,
+    real_min: Vector2, real_max: Vector2,
     r: float, g: float, b: float)
 {
-    min_x := round_s32(real_min_x);
-    min_y := round_s32(real_min_y);
-    max_x := round_s32(real_max_x);
-    max_y := round_s32(real_max_y);
+    min_x, min_y := round_s32(real_min);
+    max_x, max_y := round_s32(real_max);
 
     if min_x < 0  min_x = 0;
     if min_y < 0  min_y = 0;
@@ -356,8 +354,7 @@ game_update_and_render :: (
 
         state.player_p.abs_tile_x = 2;
         state.player_p.abs_tile_y = 3;
-        state.player_p.offset_x = 5;
-        state.player_p.offset_y = 5;
+        state.player_p.offset = .{5, 5};
         initialize_arena(*state.world_arena, array_view(game_memory.permanent, size_of(Game_State)));
 
         //state.world := World.{*tile_map};
@@ -479,23 +476,22 @@ game_update_and_render :: (
              // NOTE: Use analog movement tuning
         } else {
             // NOTE: Use digital movement tuning
-            d_player_x := 0.0;  // pixels/second
-            d_player_y := 0.0;  // pixels/second
+            d_player: Vector2;
 
             if controller.up.ended_down {
-                d_player_y = 1;
+                d_player.y = 1;
                 state.facing_direction = 1;
             }
             if controller.down.ended_down {
-                d_player_y = -1;
+                d_player.y = -1;
                 state.facing_direction = 3;
             }
             if controller.left.ended_down {
-                d_player_x = -1;
+                d_player.x = -1;
                 state.facing_direction = 2;
             }
             if controller.right.ended_down {
-                d_player_x = 1;
+                d_player.x = 1;
                 state.facing_direction = 0;
             }
             if controller.a.ended_down {
@@ -504,20 +500,22 @@ game_update_and_render :: (
 
             // TODO: diagonal will be faster, fix once we have vectors!
             // MOVEMENT
-            d_player_x *= ifx state.super_speed  22 else 8;
-            d_player_y *= ifx state.super_speed  22 else 8;
+            d_player *= ifx state.super_speed  14.0 else 8.0;
+
+            if d_player.x != 0 && d_player.y != 0 {
+                d_player *= 0.7071;  // 1/sqrt(2)
+            }
 
             new_player_p := state.player_p;
-            new_player_p.offset_x  += input.dt_for_frame * d_player_x;
-            new_player_p.offset_y += input.dt_for_frame * d_player_y;
+            new_player_p.offset += input.dt_for_frame * d_player;
             new_player_p = re_canonicalize_position(tile_map, new_player_p);
 
             player_left := new_player_p;
-            player_left.offset_x -= 0.5*player_width;
+            player_left.offset.x -= 0.5*player_width;
             player_left = re_canonicalize_position(tile_map, player_left);
 
             player_right := new_player_p;
-            player_right.offset_x += 0.5*player_width;
+            player_right.offset.x += 0.5*player_width;
             player_right = re_canonicalize_position(tile_map, player_right);
 
             if is_tile_map_point_empty(tile_map, player_left) && is_tile_map_point_empty(tile_map, player_right) {
@@ -535,10 +533,10 @@ game_update_and_render :: (
         }
 
         diff := subtract(tile_map, *state.player_p, *state.camera_p);
-        if diff.dx > 9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x += 17;
-        if diff.dx < -9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x -= 17;
-        if diff.dy > 5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y += 9;
-        if diff.dy < -5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y -= 9;
+        if diff.dxy.x > 9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x += 17;
+        if diff.dxy.x < -9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x -= 17;
+        if diff.dxy.y > 5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y += 9;
+        if diff.dxy.y < -5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y -= 9;
 
         state.camera_p.abs_tile_z = state.player_p.abs_tile_z;
     }
@@ -563,15 +561,13 @@ game_update_and_render :: (
             gray  = ifx state.camera_p.abs_tile_x == col && state.camera_p.abs_tile_y == row  0 else gray;
             gray  = ifx tile_id > 2  0.25 else gray;
 
-            cen_x := screen_center_x - METERS_TO_PIXELS * state.camera_p.offset_x +
-                rel_col * TILE_SIDE_IN_PIXELS;
-            cen_y := screen_center_y + METERS_TO_PIXELS * state.camera_p.offset_y -
-                rel_row * TILE_SIDE_IN_PIXELS;
-            min_x := cen_x - 0.5 * TILE_SIDE_IN_PIXELS;
-            min_y := cen_y - 0.5 * TILE_SIDE_IN_PIXELS;
-            max_x := cen_x + 0.5 * TILE_SIDE_IN_PIXELS;
-            max_y := cen_y + 0.5 * TILE_SIDE_IN_PIXELS;
-            draw_rectangle(buffer, min_x, min_y, max_x, max_y, gray, gray, gray);
+            cen: Vector2 = .{screen_center_x - METERS_TO_PIXELS * state.camera_p.offset.x +
+                rel_col * TILE_SIDE_IN_PIXELS,
+                screen_center_y + METERS_TO_PIXELS * state.camera_p.offset.y -
+                rel_row * TILE_SIDE_IN_PIXELS};
+            min := cen - 0.5 * TILE_SIDE_IN_PIXELS;
+            max := cen + 0.5 * TILE_SIDE_IN_PIXELS;
+            draw_rectangle(buffer, min, max, gray, gray, gray);
         }
     }
 
@@ -580,15 +576,15 @@ game_update_and_render :: (
 
     diff := subtract(tile_map, *state.player_p, *state.camera_p);
 
-    player_ground_pt_x := screen_center_x + METERS_TO_PIXELS*diff.dx;
-    player_ground_pt_y := screen_center_y - METERS_TO_PIXELS*diff.dy;
-    player_left := player_ground_pt_x - .5 * METERS_TO_PIXELS * player_width;
-    player_top  := player_ground_pt_y - METERS_TO_PIXELS * player_height;
+    player_ground_pt_x := screen_center_x + METERS_TO_PIXELS*diff.dxy.x;
+    player_ground_pt_y := screen_center_y - METERS_TO_PIXELS*diff.dxy.y;
+    player_left_top := xy(player_ground_pt_x - .5 * METERS_TO_PIXELS * player_width,
+                          player_ground_pt_y - METERS_TO_PIXELS * player_height);
+    player_width_height := xy(player_width, player_height);
 
     draw_rectangle(buffer,
-                   player_left, player_top,
-                   player_left + METERS_TO_PIXELS * player_width,
-                   player_top + METERS_TO_PIXELS * player_height,
+                   player_left_top,
+                   player_left_top + METERS_TO_PIXELS * player_width_height,
                    player_r, player_g, player_b);
 
     bitmaps := state.hero_bitmaps[state.facing_direction];
@@ -603,6 +599,7 @@ game_update_and_render :: (
 #load "handmade_h.jai";
 #load "handmade_tile.jai";
 #load "handmade_intrinsics.jai";
+#load "handmade_math.jai";
 
 #import "Basic";
 #import "Random";

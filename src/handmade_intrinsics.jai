@@ -4,8 +4,20 @@ round_s32 :: inline (x: float) -> s32 {
     return cast,trunc(s32)(x + ifx x > 0  0.5 else -0.5);
 }
 
+round_s32 :: inline (v: Vector2) -> s32, s32 {
+    x := cast,trunc(s32)(v.x + ifx v.x > 0  0.5 else -0.5);
+    y := cast,trunc(s32)(v.y + ifx v.y > 0  0.5 else -0.5);
+    return x, y;
+}
+
 round_u32 :: inline (x: float) -> u32 {
     return cast,trunc(u32)(x + ifx x > 0  0.5 else -0.5);
+}
+
+round_u32 :: inline (v: Vector2) -> u32, u32 {
+    x := cast,trunc(u32)(v.x + ifx v.x > 0  0.5 else -0.5);
+    y := cast,trunc(u32)(v.y + ifx v.y > 0  0.5 else -0.5);
+    return x, y;
 }
 
 floor_float_to_s32 :: (f: float) -> s32 {
@@ -39,7 +51,6 @@ bit_scan_forward :: (input: $T) -> index: s32, success: bool #expand {
         bitscan(input);
     }
 }
-
 
 #scope_file
 #import "Math";
