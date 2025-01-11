@@ -508,16 +508,13 @@ game_update_and_render :: (
             dd_player *= player_speed;
 
             // TODO: ODE here!
-            dd_player += -2.5*state.d_player_p;
+            dd_player += -2*state.d_player_p;
 
             new_player_p := state.player_p;
             new_player_p.offset = 0.5*dd_player * square(input.dt_for_frame) +
                                    state.d_player_p * input.dt_for_frame +
                                    new_player_p.offset;
             state.d_player_p = dd_player * input.dt_for_frame + state.d_player_p;
-
-
-
 
             new_player_p = re_canonicalize_position(tile_map, new_player_p);
 
@@ -529,7 +526,38 @@ game_update_and_render :: (
             player_right.offset.x += 0.5*player_width;
             player_right = re_canonicalize_position(tile_map, player_right);
 
-            if is_tile_map_point_empty(tile_map, player_left) && is_tile_map_point_empty(tile_map, player_right) {
+            // TODO: bad, just to make work
+            collided := false;
+            col_p: Tile_Map_Position;
+            if !is_tile_map_point_empty(tile_map, new_player_p) {
+                col_p = new_player_p;
+                collided = true;
+            } else if !is_tile_map_point_empty(tile_map, player_left) {
+                col_p = player_left;
+                collided = true;
+            } else if !is_tile_map_point_empty(tile_map, player_right) {
+                col_p = player_right;
+                collided = true;
+            }
+
+            if collided {
+                r: Vector2;
+                if col_p.abs_tile_x < state.player_p.abs_tile_x {
+                    r = .{1, 0};
+                }
+                if col_p.abs_tile_x > state.player_p.abs_tile_x {
+                    r = .{-1, 0};
+                }
+                if col_p.abs_tile_y < state.player_p.abs_tile_y {
+                    r = .{0, 1};
+                }
+                if col_p.abs_tile_y > state.player_p.abs_tile_y {
+                    r = .{0, - 1};
+                }
+
+                // 2*dot_product*r to bounce, dot*r to slide (vector only gets reflected to follow wall, not to reflect away from wall)
+                state.d_player_p = state.d_player_p - dot_product(state.d_player_p, r)*r;
+            } else {
                 // Not good code, will be nuked. Glue code to allow us to test other systems.
                 if !are_on_same_tile(*state.player_p, *new_player_p) {
                     new_tile_value := get_tile_value(tile_map, new_player_p);
