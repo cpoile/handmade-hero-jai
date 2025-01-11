@@ -20,7 +20,7 @@
 */
 
 // Set true when we want to do the stay on-top and transparent window thing:
-LAYERED_WINDOW :: false;
+LAYERED_WINDOW :: true;
 
 SAMPLE_RATE            : s32 : 48000;
 BYTES_PER_SAMPLE       :: size_of(s16) * 2;

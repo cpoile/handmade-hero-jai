@@ -130,6 +130,7 @@ re_canonicalize_coord :: (tile_map: *Tile_Map, tile: *u32, tile_rel: *float) {
     tile.* = cast,trunc(u32)(cast(s64)tile.* + offset);
     tile_rel.* -= offset * tile_map.tile_side_in_meters;
 
+    // TODO: not sure why this is firing
     assert(tile_rel.* >= -0.5*tile_map.tile_side_in_meters);
     assert(tile_rel.* <= 0.5*tile_map.tile_side_in_meters);
 }

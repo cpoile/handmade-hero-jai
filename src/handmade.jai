@@ -30,6 +30,7 @@ Game_State :: struct {
 
     camera_p         : Tile_Map_Position;
     player_p         : Tile_Map_Position;
+    d_player_p       : Vector2;
 
     super_speed      : bool;
     background       : Bitmap;
@@ -476,38 +477,48 @@ game_update_and_render :: (
              // NOTE: Use analog movement tuning
         } else {
             // NOTE: Use digital movement tuning
-            d_player: Vector2;
+            dd_player: Vector2;
 
             if controller.up.ended_down {
-                d_player.y = 1;
+                dd_player.y = 1;
                 state.facing_direction = 1;
             }
             if controller.down.ended_down {
-                d_player.y = -1;
+                dd_player.y = -1;
                 state.facing_direction = 3;
             }
             if controller.left.ended_down {
-                d_player.x = -1;
+                dd_player.x = -1;
                 state.facing_direction = 2;
             }
             if controller.right.ended_down {
-                d_player.x = 1;
+                dd_player.x = 1;
                 state.facing_direction = 0;
             }
             if controller.a.ended_down {
                 state.super_speed = !state.super_speed;
             }
 
-            // TODO: diagonal will be faster, fix once we have vectors!
-            // MOVEMENT
-            d_player *= ifx state.super_speed  14.0 else 8.0;
-
-            if d_player.x != 0 && d_player.y != 0 {
-                d_player *= 0.7071;  // 1/sqrt(2)
+            if dd_player.x != 0 && dd_player.y != 0 {
+                dd_player *= 0.7071;  // 1/sqrt(2)
             }
 
+            // MOVEMENT
+            player_speed :=  ifx state.super_speed  30.0 else 15.0;  // m/s^2
+            dd_player *= player_speed;
+
+            // TODO: ODE here!
+            dd_player += -2.5*state.d_player_p;
+
             new_player_p := state.player_p;
-            new_player_p.offset += input.dt_for_frame * d_player;
+            new_player_p.offset = 0.5*dd_player * square(input.dt_for_frame) +
+                                   state.d_player_p * input.dt_for_frame +
+                                   new_player_p.offset;
+            state.d_player_p = dd_player * input.dt_for_frame + state.d_player_p;
+
+
+
+
             new_player_p = re_canonicalize_position(tile_map, new_player_p);
 
             player_left := new_player_p;
