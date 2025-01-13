@@ -472,6 +472,11 @@ game_update_and_render :: (
     player_height := tile_map.tile_side_in_meters;
     player_width := .75 * player_height;
 
+    //
+    // NOTE:
+    //
+    old_player_p := state.player_p;
+
     for controller: input.controllers {
         if controller.analog {
              // NOTE: Use analog movement tuning
@@ -508,15 +513,18 @@ game_update_and_render :: (
             dd_player *= player_speed;
 
             // TODO: ODE here!
-            dd_player += -2*state.d_player_p;
+            dd_player += -2.0*state.d_player_p;
 
             new_player_p := state.player_p;
-            new_player_p.offset = 0.5*dd_player * square(input.dt_for_frame) +
-                                   state.d_player_p * input.dt_for_frame +
-                                   new_player_p.offset;
+            player_delta := 0.5*dd_player * square(input.dt_for_frame) +
+                            state.d_player_p * input.dt_for_frame;
+            new_player_p.offset += player_delta;
             state.d_player_p = dd_player * input.dt_for_frame + state.d_player_p;
 
             new_player_p = re_canonicalize_position(tile_map, new_player_p);
+            // TODO: Delta function that auto-recanonicalizes
+
+#if true {
 
             player_left := new_player_p;
             player_left.offset.x -= 0.5*player_width;
@@ -526,7 +534,6 @@ game_update_and_render :: (
             player_right.offset.x += 0.5*player_width;
             player_right = re_canonicalize_position(tile_map, player_right);
 
-            // TODO: bad, just to make work
             collided := false;
             col_p: Tile_Map_Position;
             if !is_tile_map_point_empty(tile_map, new_player_p) {
@@ -543,44 +550,81 @@ game_update_and_render :: (
             if collided {
                 r: Vector2;
                 if col_p.abs_tile_x < state.player_p.abs_tile_x {
-                    r = .{1, 0};
-                }
-                if col_p.abs_tile_x > state.player_p.abs_tile_x {
+                    // hit right wall, so wall's normal is pointing left
                     r = .{-1, 0};
                 }
+                if col_p.abs_tile_x > state.player_p.abs_tile_x {
+                    // hit left wall, so wall's normal is pointing right
+                    r = .{1, 0};
+                }
                 if col_p.abs_tile_y < state.player_p.abs_tile_y {
-                    r = .{0, 1};
+                    // hit top wall, so wall's normal is pointing down
+                    r = .{0, -1};
                 }
                 if col_p.abs_tile_y > state.player_p.abs_tile_y {
-                    r = .{0, - 1};
+                    // hit bottom wall, so wall's normal is pointing up
+                    r = .{0, 1};
                 }
 
                 // 2*dot_product*r to bounce, dot*r to slide (vector only gets reflected to follow wall, not to reflect away from wall)
                 state.d_player_p = state.d_player_p - dot_product(state.d_player_p, r)*r;
             } else {
-                // Not good code, will be nuked. Glue code to allow us to test other systems.
-                if !are_on_same_tile(*state.player_p, *new_player_p) {
-                    new_tile_value := get_tile_value(tile_map, new_player_p);
-                    if new_tile_value == 3 {
-                        new_player_p.abs_tile_z += 1;
-                    } else if new_tile_value == 4 {
-                        new_player_p.abs_tile_z -= 1;
-                    }
-                }
                 state.player_p = new_player_p;
             }
+} else {
+            min_tile_x : u32 = 0;
+            min_tile_y : u32 = 0;
+            max_tile_x : u32 = 0;
+            max_tile_y : u32 = 0;
+            abs_tile_z : u32 = state.player_p.abs_tile_z;
+            best_player_p := state.player_p;
+            // we don't care about the actual distance, just the best distance, so no need to take the square:
+            best_distance_sq := length_squared(player_delta);
+            for abs_tile_y: min_tile_y..max_tile_y {
+                for abs_tile_x: min_tile_x..max_tile_x {
+                    test_tile_p := centered_tile_point(abs_tile_x, abs_tile_y, abs_tile_z);
+                    tile_value := get_tile_value(tile_map, abs_tile_x, abs_tile_y, abs_tile_z);
+                    if is_tile_value_empty(tile_value) {
+                        min_corner := -0.5 * xy(TILE_SIDE_IN_METERS, TILE_SIDE_IN_METERS);
+                        max_corner :=  0.5 * xy(TILE_SIDE_IN_METERS, TILE_SIDE_IN_METERS);
+
+                        rel_new_player_p := subtract(tile_map, *test_tile_p, *new_player_p);
+                        test_p := closest_point_in_rectangle(min_corner, max_corner, rel_new_player_p);
+                        //test_distance_sq := ;
+                        //if best_distance_sq > test_distance_sq {
+                        //    best_player_p = ;
+                        //    best_distance_sq = ;
+                        //}
+                    }
+                }
+            }
+}
         }
-
-        diff := subtract(tile_map, *state.player_p, *state.camera_p);
-        if diff.dxy.x > 9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x += 17;
-        if diff.dxy.x < -9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x -= 17;
-        if diff.dxy.y > 5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y += 9;
-        if diff.dxy.y < -5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y -= 9;
-
-        state.camera_p.abs_tile_z = state.player_p.abs_tile_z;
     }
 
-    // DRAW background
+    //
+    // NOTE: Updtate camera/player Z based on last movement.
+    //
+    if !are_on_same_tile(*old_player_p, *state.player_p) {
+        new_tile_value := get_tile_value(tile_map, state.player_p);
+        if new_tile_value == 3 {
+            state.player_p.abs_tile_z += 1;
+        } else if new_tile_value == 4 {
+            state.player_p.abs_tile_z -= 1;
+        }
+    }
+
+    state.camera_p.abs_tile_z = state.player_p.abs_tile_z;
+
+    diff := subtract(tile_map, *state.player_p, *state.camera_p);
+    if diff.dxy.x > 9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x += 17;
+    if diff.dxy.x < -9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x -= 17;
+    if diff.dxy.y > 5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y += 9;
+    if diff.dxy.y < -5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y -= 9;
+
+    diff = subtract(tile_map, *state.player_p, *state.camera_p);
+
+    // NOTE: RENDER
     draw_bitmap(buffer, state.background, 0, 0);
 
     //draw_rectangle(buffer, 0, 0, cast(float)buffer.width, cast(float)buffer.height, 1, 0, 1);
@@ -612,8 +656,6 @@ game_update_and_render :: (
 
     // DRAW PLAYER
     player_r, player_g, player_b := 1.0, 1.0, 0.0;
-
-    diff := subtract(tile_map, *state.player_p, *state.camera_p);
 
     player_ground_pt_x := screen_center_x + METERS_TO_PIXELS*diff.dxy.x;
     player_ground_pt_y := screen_center_y - METERS_TO_PIXELS*diff.dxy.y;

@@ -62,14 +62,6 @@ set_tile_value_unchecked :: (tile_map: *Tile_Map, tile_chunk: Tile_Chunk, tile_x
     tile_chunk[tile_y * tile_map.chunk_dim + tile_x] = tile_value;
 }
 
-get_tile_value :: (tile_map: *Tile_Map, tile_chunk: *Tile_Chunk, test_tile_x: u32, test_tile_y: u32) -> u32 {
-    tile_chunk_value : u32 = 0;
-    if tile_chunk != null && tile_chunk.data {
-        tile_chunk_value = get_tile_value_unchecked(tile_map, tile_chunk.*, test_tile_x, test_tile_y);
-    }
-    return tile_chunk_value;
-}
-
 set_tile_value :: (tile_map: *Tile_Map, tile_chunk: Tile_Chunk, test_tile_x: u32, test_tile_y: u32, tile_value: u32) {
     if tile_chunk.data {
         set_tile_value_unchecked(tile_map, tile_chunk, test_tile_x, test_tile_y, tile_value);
@@ -99,10 +91,24 @@ get_tile_value :: (tile_map: *Tile_Map, pos: Tile_Map_Position) -> u32 {
     return tile_chunk_value;
  }
 
+
+get_tile_value :: (tile_map: *Tile_Map, tile_chunk: *Tile_Chunk, test_tile_x: u32, test_tile_y: u32) -> u32 {
+    tile_chunk_value : u32 = 0;
+    if tile_chunk != null && tile_chunk.data {
+        tile_chunk_value = get_tile_value_unchecked(tile_map, tile_chunk.*, test_tile_x, test_tile_y);
+    }
+    return tile_chunk_value;
+}
+
+is_tile_value_empty :: (val: u32) -> bool {
+    empty := val == 1 || val == 3 || val == 4;
+    return empty;
+}
+
 is_tile_map_point_empty :: (tile_map: *Tile_Map, can_pos: Tile_Map_Position) -> bool {
     tile_chunk_value := get_tile_value(tile_map, can_pos.abs_tile_x, can_pos.abs_tile_y, can_pos.abs_tile_z);
 
-    empty := tile_chunk_value == 1 || tile_chunk_value == 3 || tile_chunk_value == 4;
+    empty := is_tile_value_empty(tile_chunk_value);
 
     return empty;
 }
@@ -166,4 +172,8 @@ subtract :: (tile_map: *Tile_Map, a: *Tile_Map_Position, b: *Tile_Map_Position) 
     };
 
     return ret;
+}
+
+centered_tile_point :: (abs_tile_x: u32, abs_tile_y: u32, abs_tile_z: u32) -> Tile_Map_Position {
+    return .{abs_tile_x, abs_tile_y, abs_tile_z, .{0, 0}};
 }
