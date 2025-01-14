@@ -24,17 +24,35 @@ Hero_Bitmap :: struct {
     torso   : Bitmap;
 }
 
-Game_State :: struct {
-    world_arena      : Memory_Arena;
-    world            : *World;
+DIRECTION :: enum s8 {
+    UP    :: 1;
+    DOWN  :: 3;
+    LEFT  :: 2;
+    RIGHT :: 0;
+}
 
-    camera_p         : Tile_Map_Position;
-    player_p         : Tile_Map_Position;
-    d_player_p       : Vector2;
+Entity :: struct {
+    exists           : bool;
+    p                : Tile_Map_Position;
+    d_p              : Vector2;
+    facing_direction : DIRECTION;
+    height, width    : float;
+}
+
+Game_State :: struct {
+    world_arena : Memory_Arena;
+    world       : *World;
+
+    // TODO: should we allow split-screen?
+    camera_following_entity_index : u32;
+    camera_p                      : Tile_Map_Position;
+    entity_count                  : u32;
+    entities                      : [256]Entity;  // we should be using a dynamic array with our perm storage.
+
+    player_index_for_controller     : [MAX_INPUTS]u32;
 
     super_speed      : bool;
     background       : Bitmap;
-    facing_direction : s8;
     hero_bitmaps     : [4]Hero_Bitmap;
 }
 
@@ -230,23 +248,28 @@ load_bmp :: (read_entire_file: DEBUG_Platform_Read_Entire_File, filename: string
     };
 
     alpha_mask := ~(header.red_mask | header.green_mask | header.blue_mask);
-    alpha_shift, red_shift, green_shift, blue_shift : s32;
+    alpha_scan, red_scan, green_scan, blue_scan : s32;
     success: bool;
-    alpha_shift, success = bit_scan_forward(alpha_mask);
+    alpha_scan, success = bit_scan_forward(alpha_mask);
     assert(success);
-    red_shift, success = bit_scan_forward(header.red_mask);
+    red_scan, success = bit_scan_forward(header.red_mask);
     assert(success);
-    green_shift, success = bit_scan_forward(header.green_mask);
+    green_scan, success = bit_scan_forward(header.green_mask);
     assert(success);
-    blue_shift, success = bit_scan_forward(header.blue_mask);
+    blue_scan, success = bit_scan_forward(header.blue_mask);
     assert(success);
+
+    alpha_shift := 24 - alpha_scan;
+    red_shift   := 16 - red_scan;
+    green_shift := 8 - green_scan;
+    blue_shift  := 0 - blue_scan;
 
     // have to put the AA channel up front:
     for * pixels {
-        it.* = ((it.* >> alpha_shift) & 0xff << 24) |
-               ((it.* >> red_shift) & 0xff << 16) |
-               ((it.* >> green_shift) & 0xff << 8) |
-               ((it.* >> blue_shift) & 0xff << 0);
+        it.* = ((it.* & alpha_mask)        <<< alpha_shift) |
+               ((it.* & header.red_mask)   <<< red_shift)   |
+               ((it.* & header.green_mask) <<< green_shift) |
+               ((it.* & header.blue_mask)  <<< blue_shift);
     }
 
     ret := Bitmap.{
@@ -286,6 +309,161 @@ push_array :: (arena: *Memory_Arena, $T: Type, $N: s64) -> []T {
     return cast([N]T)result;
 }
 
+get_entity :: (state: *Game_State, index: u32) -> *Entity {
+    entity: *Entity;
+
+    if index > 0 && index < state.entities.count {
+        entity = *state.entities[index];
+    }
+    return entity;
+}
+
+initialize_player :: (state: *Game_State, entity_index: u32) {
+    entity := get_entity(state, entity_index);
+
+    entity.* = .{exists = true};
+
+    entity.p.abs_tile_x = 2;
+    entity.p.abs_tile_y = 3;
+    entity.p.offset     = .{5, 5};
+    entity.height       = 1.4;
+    entity.width        = 0.75 * entity.height;
+
+    if !get_entity(state, state.camera_following_entity_index) {
+        state.camera_following_entity_index = entity_index;
+    }
+}
+
+add_entity :: (state: *Game_State) -> u32 {
+    assert(state.entity_count < state.entities.count);
+    index := state.entity_count;
+    state.entity_count += 1;
+    // entity is already there, and auto initialized to 0
+    return index;
+}
+
+move_player :: (state: *Game_State, entity: *Entity, dt: float, init_dd_p: Vector2) {
+    dd_p := init_dd_p;
+    tile_map  := state.world.tile_map;
+
+    if dd_p.x != 0 && dd_p.y != 0 {
+        dd_p *= 0.7071;  // 1/sqrt(2)
+    }
+
+    player_speed :=  ifx state.super_speed  200.0 else 100.0;  // m/s^2
+    dd_p *= player_speed;
+
+    // TODO: ODE here!
+    dd_p += -10.0 * entity.d_p;
+
+    old_player_p := entity.p;
+    new_player_p := old_player_p;
+    player_delta := 0.5*dd_p * square(dt) +
+                            entity.d_p * dt;
+    new_player_p.offset += player_delta;
+    entity.d_p = dd_p * dt + entity.d_p;
+
+    new_player_p = re_canonicalize_position(tile_map, new_player_p);
+    // TODO: Delta function that auto-recanonicalizes
+
+#if true {
+    player_left := new_player_p;
+    player_left.offset.x -= 0.5*entity.width;
+    player_left = re_canonicalize_position(tile_map, player_left);
+
+    player_right := new_player_p;
+    player_right.offset.x += 0.5*entity.width;
+    player_right = re_canonicalize_position(tile_map, player_right);
+
+    collided := false;
+    col_p: Tile_Map_Position;
+    if !is_tile_map_point_empty(tile_map, new_player_p) {
+        col_p = new_player_p;
+        collided = true;
+    } else if !is_tile_map_point_empty(tile_map, player_left) {
+        col_p = player_left;
+        collided = true;
+    } else if !is_tile_map_point_empty(tile_map, player_right) {
+        col_p = player_right;
+        collided = true;
+    }
+
+    if collided {
+        r: Vector2;
+        if col_p.abs_tile_x < entity.p.abs_tile_x {
+            // hit right wall, so wall's normal is pointing left
+            r = .{-1, 0};
+        }
+        if col_p.abs_tile_x > entity.p.abs_tile_x {
+            // hit left wall, so wall's normal is pointing right
+            r = .{1, 0};
+        }
+        if col_p.abs_tile_y < entity.p.abs_tile_y {
+            // hit top wall, so wall's normal is pointing down
+            r = .{0, -1};
+        }
+        if col_p.abs_tile_y > entity.p.abs_tile_y {
+            // hit bottom wall, so wall's normal is pointing up
+            r = .{0, 1};
+        }
+
+        // 2*dot_product*r to bounce, dot*r to slide (vector only gets reflected to follow wall, not to reflect away from wall)
+        entity.d_p = entity.d_p - dot_product(entity.d_p, r)*r;
+    } else {
+        entity.p = new_player_p;
+    }
+} else {
+    min_tile_x : u32 = 0;
+    min_tile_y : u32 = 0;
+    max_tile_x : u32 = 0;
+    max_tile_y : u32 = 0;
+    abs_tile_z : u32 = entity.p.abs_tile_z;
+    best_player_p := entity.p;
+    // we don't care about the actual distance, just the best distance, so no need to take the square:
+    best_distance_sq := length_squared(player_delta);
+    for abs_tile_y: min_tile_y..max_tile_y {
+        for abs_tile_x: min_tile_x..max_tile_x {
+            test_tile_p := centered_tile_point(abs_tile_x, abs_tile_y, abs_tile_z);
+            tile_value := get_tile_value(tile_map, abs_tile_x, abs_tile_y, abs_tile_z);
+            if is_tile_value_empty(tile_value) {
+                min_corner := -0.5 * xy(TILE_SIDE_IN_METERS, TILE_SIDE_IN_METERS);
+                max_corner :=  0.5 * xy(TILE_SIDE_IN_METERS, TILE_SIDE_IN_METERS);
+
+                rel_new_player_p := subtract(tile_map, *test_tile_p, *new_player_p);
+                test_p := closest_point_in_rectangle(min_corner, max_corner, rel_new_player_p);
+                //test_distance_sq := ;
+                //if best_distance_sq > test_distance_sq {
+                //    best_player_p = ;
+                //    best_distance_sq = ;
+                //}
+            }
+        }
+    }
+}
+
+    //
+    // NOTE: Updtate camera/player Z based on last movement.
+    //
+    if !are_on_same_tile(*old_player_p, *entity.p) {
+        new_tile_value := get_tile_value(tile_map, entity.p);
+        if new_tile_value == 3 {
+            entity.p.abs_tile_z += 1;
+        } else if new_tile_value == 4 {
+            entity.p.abs_tile_z -= 1;
+        }
+    }
+
+    using DIRECTION;
+
+    if entity.d_p.x == 0 && entity.d_p.y == 0 {
+        // NOTE: Leave facing_direction whatever it was
+    } else if abs(entity.d_p.x) > abs(entity.d_p.y) {
+        entity.facing_direction = ifx entity.d_p.x > 0 then .RIGHT else .LEFT;
+    } else if abs(entity.d_p.x) < abs(entity.d_p.y) {
+        entity.facing_direction = ifx entity.d_p.y > 0 then .UP else .DOWN;
+    }
+}
+
 // NOTE: may expand in the future
 // need FOUR THINGS: timing, controller/keyboard input, bitmap buffer to use, sound buffer to use
 
@@ -295,15 +473,8 @@ game_update_and_render :: (
     input: *Game_Input,
     buffer: *Game_Offscreen_Buffer
 ) -> bool {
-
-    // for dev, be deterministic
-    // millis := to_milliseconds(current_time_consensus());
-    //random_seed(cast(u64)millis);
-    random_seed(1233445);
-
-    empty := false;
-    assert(game_memory != null);
     #if HANDMADE_DEBUG {
+        assert(game_memory != null);
         assert(size_of(Game_State) <= game_memory.permanent.count);
         assert((*input.controllers[0].terminator - *input.controllers[0].up) == input.controllers[0].buttons.count);
     }
@@ -319,6 +490,14 @@ game_update_and_render :: (
 
     state := cast(*Game_State)game_memory.permanent.data;
     if !game_memory.initialized {
+        // for dev, be deterministic
+        // millis := to_milliseconds(current_time_consensus());
+        //random_seed(cast(u64)millis);
+        random_seed(1233445);
+
+        // NOTE: reserve entity slot 0 for the null entity
+        add_entity(state);
+
         //state.bmp = load_bmp(game_memory.read_entire_file, "structured_art.bmp");
         state.background = load_bmp(game_memory.read_entire_file, "test/test_background.bmp");
 
@@ -353,9 +532,6 @@ game_update_and_render :: (
         state.camera_p.abs_tile_x = 17/2;
         state.camera_p.abs_tile_y = 9/2;
 
-        state.player_p.abs_tile_x = 2;
-        state.player_p.abs_tile_y = 3;
-        state.player_p.offset = .{5, 5};
         initialize_arena(*state.world_arena, array_view(game_memory.permanent, size_of(Game_State)));
 
         //state.world := World.{*tile_map};
@@ -469,160 +645,55 @@ game_update_and_render :: (
     world := state.world;
     tile_map := world.tile_map;
 
-    player_height := tile_map.tile_side_in_meters;
-    player_width := .75 * player_height;
-
-    //
-    // NOTE:
-    //
-    old_player_p := state.player_p;
-
     for controller: input.controllers {
-        if controller.analog {
-             // NOTE: Use analog movement tuning
-        } else {
-            // NOTE: Use digital movement tuning
+        controlling_entity := get_entity(state, state.player_index_for_controller[it_index]);
+        if controlling_entity {
             dd_player: Vector2;
 
-            if controller.up.ended_down {
-                dd_player.y = 1;
-                state.facing_direction = 1;
+            if controller.analog {
+                // NOTE: Use analog movement tuning
+                dd_player = .{controller.stick_avg_x, controller.stick_avg_y};
+            } else {
+                // NOTE: Use digital movement tuning
+
+                if controller.up.ended_down {
+                    dd_player.y = 1;
+                }
+                if controller.down.ended_down {
+                    dd_player.y = -1;
+                }
+                if controller.left.ended_down {
+                    dd_player.x = -1;
+                }
+                if controller.right.ended_down {
+                    dd_player.x = 1;
+                }
             }
-            if controller.down.ended_down {
-                dd_player.y = -1;
-                state.facing_direction = 3;
-            }
-            if controller.left.ended_down {
-                dd_player.x = -1;
-                state.facing_direction = 2;
-            }
-            if controller.right.ended_down {
-                dd_player.x = 1;
-                state.facing_direction = 0;
-            }
+
             if controller.a.ended_down {
                 state.super_speed = !state.super_speed;
             }
 
-            if dd_player.x != 0 && dd_player.y != 0 {
-                dd_player *= 0.7071;  // 1/sqrt(2)
+            move_player(state, controlling_entity, input.dt_for_frame, dd_player);
+        } else {
+            if controller.start.ended_down {
+                entity_index := add_entity(state);
+                initialize_player(state, entity_index);
+                state.player_index_for_controller[it_index] = entity_index;
             }
-
-            // MOVEMENT
-            player_speed :=  ifx state.super_speed  30.0 else 15.0;  // m/s^2
-            dd_player *= player_speed;
-
-            // TODO: ODE here!
-            dd_player += -2.0*state.d_player_p;
-
-            new_player_p := state.player_p;
-            player_delta := 0.5*dd_player * square(input.dt_for_frame) +
-                            state.d_player_p * input.dt_for_frame;
-            new_player_p.offset += player_delta;
-            state.d_player_p = dd_player * input.dt_for_frame + state.d_player_p;
-
-            new_player_p = re_canonicalize_position(tile_map, new_player_p);
-            // TODO: Delta function that auto-recanonicalizes
-
-#if true {
-
-            player_left := new_player_p;
-            player_left.offset.x -= 0.5*player_width;
-            player_left = re_canonicalize_position(tile_map, player_left);
-
-            player_right := new_player_p;
-            player_right.offset.x += 0.5*player_width;
-            player_right = re_canonicalize_position(tile_map, player_right);
-
-            collided := false;
-            col_p: Tile_Map_Position;
-            if !is_tile_map_point_empty(tile_map, new_player_p) {
-                col_p = new_player_p;
-                collided = true;
-            } else if !is_tile_map_point_empty(tile_map, player_left) {
-                col_p = player_left;
-                collided = true;
-            } else if !is_tile_map_point_empty(tile_map, player_right) {
-                col_p = player_right;
-                collided = true;
-            }
-
-            if collided {
-                r: Vector2;
-                if col_p.abs_tile_x < state.player_p.abs_tile_x {
-                    // hit right wall, so wall's normal is pointing left
-                    r = .{-1, 0};
-                }
-                if col_p.abs_tile_x > state.player_p.abs_tile_x {
-                    // hit left wall, so wall's normal is pointing right
-                    r = .{1, 0};
-                }
-                if col_p.abs_tile_y < state.player_p.abs_tile_y {
-                    // hit top wall, so wall's normal is pointing down
-                    r = .{0, -1};
-                }
-                if col_p.abs_tile_y > state.player_p.abs_tile_y {
-                    // hit bottom wall, so wall's normal is pointing up
-                    r = .{0, 1};
-                }
-
-                // 2*dot_product*r to bounce, dot*r to slide (vector only gets reflected to follow wall, not to reflect away from wall)
-                state.d_player_p = state.d_player_p - dot_product(state.d_player_p, r)*r;
-            } else {
-                state.player_p = new_player_p;
-            }
-} else {
-            min_tile_x : u32 = 0;
-            min_tile_y : u32 = 0;
-            max_tile_x : u32 = 0;
-            max_tile_y : u32 = 0;
-            abs_tile_z : u32 = state.player_p.abs_tile_z;
-            best_player_p := state.player_p;
-            // we don't care about the actual distance, just the best distance, so no need to take the square:
-            best_distance_sq := length_squared(player_delta);
-            for abs_tile_y: min_tile_y..max_tile_y {
-                for abs_tile_x: min_tile_x..max_tile_x {
-                    test_tile_p := centered_tile_point(abs_tile_x, abs_tile_y, abs_tile_z);
-                    tile_value := get_tile_value(tile_map, abs_tile_x, abs_tile_y, abs_tile_z);
-                    if is_tile_value_empty(tile_value) {
-                        min_corner := -0.5 * xy(TILE_SIDE_IN_METERS, TILE_SIDE_IN_METERS);
-                        max_corner :=  0.5 * xy(TILE_SIDE_IN_METERS, TILE_SIDE_IN_METERS);
-
-                        rel_new_player_p := subtract(tile_map, *test_tile_p, *new_player_p);
-                        test_p := closest_point_in_rectangle(min_corner, max_corner, rel_new_player_p);
-                        //test_distance_sq := ;
-                        //if best_distance_sq > test_distance_sq {
-                        //    best_player_p = ;
-                        //    best_distance_sq = ;
-                        //}
-                    }
-                }
-            }
-}
         }
     }
 
-    //
-    // NOTE: Updtate camera/player Z based on last movement.
-    //
-    if !are_on_same_tile(*old_player_p, *state.player_p) {
-        new_tile_value := get_tile_value(tile_map, state.player_p);
-        if new_tile_value == 3 {
-            state.player_p.abs_tile_z += 1;
-        } else if new_tile_value == 4 {
-            state.player_p.abs_tile_z -= 1;
-        }
+    camera_following_entity := get_entity(state, state.camera_following_entity_index);
+    if camera_following_entity {
+        state.camera_p.abs_tile_z = camera_following_entity.p.abs_tile_z;
+
+        diff := subtract(tile_map, *camera_following_entity.p, *state.camera_p);
+        if diff.dxy.x > 9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x += 17;
+        if diff.dxy.x < -9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x -= 17;
+        if diff.dxy.y > 5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y += 9;
+        if diff.dxy.y < -5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y -= 9;
     }
-
-    state.camera_p.abs_tile_z = state.player_p.abs_tile_z;
-
-    diff := subtract(tile_map, *state.player_p, *state.camera_p);
-    if diff.dxy.x > 9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x += 17;
-    if diff.dxy.x < -9 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_x -= 17;
-    if diff.dxy.y > 5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y += 9;
-    if diff.dxy.y < -5 * TILE_SIDE_IN_METERS  state.camera_p.abs_tile_y -= 9;
-
-    diff = subtract(tile_map, *state.player_p, *state.camera_p);
 
     // NOTE: RENDER
     draw_bitmap(buffer, state.background, 0, 0);
@@ -655,24 +726,30 @@ game_update_and_render :: (
     }
 
     // DRAW PLAYER
-    player_r, player_g, player_b := 1.0, 1.0, 0.0;
+    for state.entities {
+        // TODO: culling of entities based on Z / camera view
+        if !it.exists  continue;
 
-    player_ground_pt_x := screen_center_x + METERS_TO_PIXELS*diff.dxy.x;
-    player_ground_pt_y := screen_center_y - METERS_TO_PIXELS*diff.dxy.y;
-    player_left_top := xy(player_ground_pt_x - .5 * METERS_TO_PIXELS * player_width,
-                          player_ground_pt_y - METERS_TO_PIXELS * player_height);
-    player_width_height := xy(player_width, player_height);
+        diff := subtract(tile_map, *it.p , *state.camera_p);
 
-    draw_rectangle(buffer,
-                   player_left_top,
-                   player_left_top + METERS_TO_PIXELS * player_width_height,
-                   player_r, player_g, player_b);
+        player_r, player_g, player_b := 1.0, 1.0, 0.0;
 
-    bitmaps := state.hero_bitmaps[state.facing_direction];
-    draw_bitmap(buffer, bitmaps.torso, player_ground_pt_x, player_ground_pt_y, bitmaps.align_x, bitmaps.align_y);
-    draw_bitmap(buffer, bitmaps.cape, player_ground_pt_x, player_ground_pt_y, bitmaps.align_x, bitmaps.align_y);
-    draw_bitmap(buffer, bitmaps.head, player_ground_pt_x, player_ground_pt_y, bitmaps.align_x, bitmaps.align_y);
+        player_ground_pt_x := screen_center_x + METERS_TO_PIXELS*diff.dxy.x;
+        player_ground_pt_y := screen_center_y - METERS_TO_PIXELS*diff.dxy.y;
+        player_left_top := xy(player_ground_pt_x - .5 * METERS_TO_PIXELS * it.width,
+                              player_ground_pt_y - METERS_TO_PIXELS * it.height);
+        player_width_height := xy(it.width, it.height);
 
+        draw_rectangle(buffer,
+                       player_left_top,
+                       player_left_top + METERS_TO_PIXELS * player_width_height,
+                       player_r, player_g, player_b);
+
+        bitmaps := state.hero_bitmaps[it.facing_direction];
+        draw_bitmap(buffer, bitmaps.torso, player_ground_pt_x, player_ground_pt_y, bitmaps.align_x, bitmaps.align_y);
+        draw_bitmap(buffer, bitmaps.cape, player_ground_pt_x, player_ground_pt_y, bitmaps.align_x, bitmaps.align_y);
+        draw_bitmap(buffer, bitmaps.head, player_ground_pt_x, player_ground_pt_y, bitmaps.align_x, bitmaps.align_y);
+    }
 
     return true;
 }

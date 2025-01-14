@@ -155,6 +155,7 @@ are_on_same_tile :: (a: *Tile_Map_Position, b: *Tile_Map_Position) -> bool {
     return res;
 }
 
+// TODO: replace with Vector3
 Tile_Map_Difference :: struct {
     dxy: Vector2;
     dz: float;

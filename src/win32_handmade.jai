@@ -388,6 +388,15 @@ win32_debug_sync_display :: (back_buffer: *Offscreen_Buffer, last_play_cursor_co
 }
 }
 
+win32_process_xinput_stick_value :: (value: s16, dzone: s16) -> float {
+    result := 0.0;
+
+    if value < -dzone  result = cast(float)((value + dzone) / (32768.0 - dzone));
+    if value >  dzone  result = cast(float)((value - dzone) / (32767.0 - dzone));
+
+    return result;
+}
+
 win32_process_xinput_digital_button :: (
     old_state: Game_Button_State,
     new_state: *Game_Button_State,
@@ -488,12 +497,13 @@ win32_process_pending_messages :: (state: *Win32_State, keyboard_controller: *Ga
                 case #char "S";  win32_process_keyboard_message(*keyboard_controller.right, isDown);
                 case #char "Q";  win32_process_keyboard_message(*keyboard_controller.left_shoulder, isDown);
                 case #char "F";  win32_process_keyboard_message(*keyboard_controller.right_shoulder, isDown);
+                case #char "T";  win32_process_keyboard_message(*keyboard_controller.a, isDown);  // "turbo"
                 case VK_UP;      win32_process_keyboard_message(*keyboard_controller.up, isDown);
                 case VK_DOWN;    win32_process_keyboard_message(*keyboard_controller.down, isDown);
                 case VK_LEFT;    win32_process_keyboard_message(*keyboard_controller.left, isDown);
                 case VK_RIGHT;   win32_process_keyboard_message(*keyboard_controller.right, isDown);
-                case VK_SPACE;   win32_process_keyboard_message(*keyboard_controller.a, isDown);
-                case VK_ESCAPE;  global_running = false;
+                case VK_SPACE;   win32_process_keyboard_message(*keyboard_controller.start, isDown);
+                case VK_ESCAPE;  global_running = false;  // TODO: will be back button, but keeping it hear b/c easier to develop
                 case #char "P";  if isDown  global_pause = !global_pause;
                 case #char "L";  if isDown {
                     // TODO: this doesn't seem to work if we change to -1 being the "no playing" state...
@@ -869,11 +879,8 @@ main :: () {
                 // right := pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
 
                 // TODO: this is a square deadzone, check XINPUT to verify if the deadzone is round
-                dzone := XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
-                denom : float = xx ifx pad.sThumbLX < dzone then 32768 else 32767;
-                x := cast(float)pad.sThumbLX / denom;
-                denom = xx ifx pad.sThumbLY < -dzone then 32768 else 32767;
-                y := cast(float)pad.sThumbLY / denom;
+                x := win32_process_xinput_stick_value(pad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                y := win32_process_xinput_stick_value(pad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
 
                 if x != 0 || y != 0  new_controller.analog = true;
 
@@ -882,19 +889,19 @@ main :: () {
 
                 if pad.wButtons & XINPUT_GAMEPAD_DPAD_UP     {
                     new_controller.stick_avg_y = 1;
-                    new_controller.analog = false;
+                    //new_controller.analog = false;
                 }
                 if pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN {
                     new_controller.stick_avg_y = -1;
-                    new_controller.analog = false;
+                    //new_controller.analog = false;
                 }
                 if pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT {
                     new_controller.stick_avg_x = -1;
-                    new_controller.analog = false;
+                    //new_controller.analog = false;
                 }
                 if pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT {
                     new_controller.stick_avg_x = 1;
-                    new_controller.analog = false;
+                    //new_controller.analog = false;
                 }
                 // NOTE: not doing the stick->move_up/down/etc mapping that Casey did. Maybe I'll do it if we need it later.
 
